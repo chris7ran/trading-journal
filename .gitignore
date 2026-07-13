@@ -2,6 +2,7 @@
 **/.env
 .env
 .env.*
+**/api.env
 !**/.env.example
 
 # Rust

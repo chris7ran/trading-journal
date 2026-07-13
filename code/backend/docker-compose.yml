@@ -1,5 +1,7 @@
 # Reproducible single-container deployment.
-#   1. cp .env.example .env  (fill JWT_SECRET, ADMIN_PASSWORD_HASH, optional FRED_API_KEY)
+#   1. cp .env.example api.env  (fill JWT_SECRET, ADMIN_PASSWORD_HASH, optional FRED_API_KEY)
+#      NB: use "api.env", not ".env" — Compose interpolates a file named ".env"
+#      and would mangle the "$" characters in the Argon2 hash.
 #   2. docker compose up -d --build
 #   3. docker compose logs -f
 # The named volume `tjapi-data` persists the SQLite database across restarts/updates.
@@ -13,7 +15,10 @@ services:
     ports:
       # Loopback only: reachable via Tailscale (tailscale serve), never on the LAN.
       - "127.0.0.1:8090:8080"
-    env_file: .env
+    # api.env (NOT ".env"): Compose auto-interpolates a file literally named ".env",
+    # which mangles the "$" in the Argon2 hash. A differently-named env_file is
+    # passed to the container literally.
+    env_file: api.env
     volumes:
       - tjapi-data:/app/data
     healthcheck:
