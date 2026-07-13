@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "mobile",
-    "slug": "mobile",
+    "name": "Trading Journal",
+    "slug": "trading-journal",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -14,6 +14,7 @@
     },
     "ios": {
       "supportsTablet": true,
+      "bundleIdentifier": "com.chris7ran.tradingjournal",
       "infoPlist": {
         "NSFaceIDUsageDescription": "Déverrouiller Trading Journal avec Face ID."
       }
@@ -24,7 +25,8 @@
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.chris7ran.tradingjournal"
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -36,7 +38,8 @@
         {
           "faceIDPermission": "Déverrouiller Trading Journal avec Face ID."
         }
-      ]
+      ],
+      "expo-font"
     ]
   }
 }

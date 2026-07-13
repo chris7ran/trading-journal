@@ -15,6 +15,10 @@
 **/dist/
 web-build/
 
+# Expo prebuild native projects (regenerated via `expo prebuild`)
+code/mobile/ios/
+code/mobile/android/
+
 # SQLite data
 *.db
 *.db-shm
