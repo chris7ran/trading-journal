@@ -5,8 +5,7 @@
 [![Backend: Rust](https://img.shields.io/badge/backend-Rust%20%2B%20axum-orange.svg)](code/backend)
 [![Mobile: React Native](https://img.shields.io/badge/mobile-React%20Native%20%2F%20Expo-61dafb.svg)](code/mobile)
 
-A **self-hosted, single-user trading journal** for iOS — think *TradeZella*, but
-private, owned end-to-end, and running on my own hardware for **€0/month**.
+A **self-hosted, single-user trading journal** for iOS —  owned end-to-end, and running on my own hardware for **€0/month**.
 Log trades, analyse performance, track prop-firm rules, follow the macro calendar,
 and review your own trading psychology — all behind a private VPN, no public port,
 no third-party cloud holding your data.
