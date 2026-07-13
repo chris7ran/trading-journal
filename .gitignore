@@ -1,0 +1,28 @@
+# Secrets — NEVER commit real env files
+**/.env
+.env
+.env.*
+!**/.env.example
+
+# Rust
+**/target/
+**/*.rs.bk
+
+# Node / Expo
+**/node_modules/
+**/.expo/
+**/dist/
+web-build/
+
+# SQLite data
+*.db
+*.db-shm
+*.db-wal
+**/data/
+
+# OS / logs
+.DS_Store
+*.log
+
+# Données de trading réelles (privé)
+code/backend/ReportHistory*

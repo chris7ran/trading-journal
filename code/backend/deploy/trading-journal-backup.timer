@@ -1,0 +1,11 @@
+# Runs the backup daily (and catches up if the machine was off — Persistent=true).
+
+[Unit]
+Description=Daily trading-journal database backup
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

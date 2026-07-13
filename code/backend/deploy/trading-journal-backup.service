@@ -1,0 +1,17 @@
+# Oneshot backup unit, triggered by trading-journal-backup.timer.
+# Install: copy backup.sh to /opt/trading-journal-api/ (chmod +x) and this unit
+# + the .timer to /etc/systemd/system/, then:
+#   sudo systemctl daemon-reload && sudo systemctl enable --now trading-journal-backup.timer
+
+[Unit]
+Description=Backup the trading-journal SQLite database
+After=trading-journal-api.service
+
+[Service]
+Type=oneshot
+User=tjapi
+Group=tjapi
+Environment=TJ_DB=/var/lib/trading-journal-api/journal.db
+Environment=TJ_BACKUP_DIR=/var/backups/trading-journal-api
+Environment=TJ_BACKUP_KEEP=14
+ExecStart=/opt/trading-journal-api/backup.sh

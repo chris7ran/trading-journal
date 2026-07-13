@@ -1,0 +1,38 @@
+[Unit]
+Description=Trading Journal API (Rust/axum)
+Documentation=file:///opt/trading-journal-api/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Dedicated unprivileged system user (see deploy/README.md to create it).
+User=tjapi
+Group=tjapi
+
+# Binary and data locations.
+WorkingDirectory=/var/lib/trading-journal-api
+ExecStart=/opt/trading-journal-api/trading-journal-api
+
+# Secrets & config (JWT_SECRET, ADMIN_PASSWORD_HASH, DATABASE_URL, ...).
+EnvironmentFile=/etc/trading-journal-api/api.env
+
+Restart=on-failure
+RestartSec=3
+
+# --- Hardening ---------------------------------------------------------------
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+# Allow writes only to the data directory.
+ReadWritePaths=/var/lib/trading-journal-api
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  backend:
+    name: Backend (Rust)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: code/backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: code/backend
+      # Hard gates: the build must compile and all tests must pass.
+      - name: Build
+        run: cargo build --release --locked
+      - name: Test
+        run: cargo test --locked
+      # Style / lint: informative (won't fail the build initially).
+      - name: Format check
+        run: cargo fmt --check
+        continue-on-error: true
+      - name: Clippy
+        run: cargo clippy --all-targets
+        continue-on-error: true
+
+  mobile:
+    name: Mobile (TypeScript)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: code/mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: code/mobile/package-lock.json
+      - name: Install deps
+        run: npm ci
+      - name: Type-check
+        run: npx tsc --noEmit

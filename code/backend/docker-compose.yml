@@ -1,0 +1,27 @@
+# Reproducible single-container deployment.
+#   1. cp .env.example .env  (fill JWT_SECRET, ADMIN_PASSWORD_HASH, optional FRED_API_KEY)
+#   2. docker compose up -d --build
+#   3. docker compose logs -f
+# The named volume `tjapi-data` persists the SQLite database across restarts/updates.
+
+services:
+  api:
+    build: .
+    image: trading-journal-api:latest
+    container_name: tjapi
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    env_file: .env
+    volumes:
+      - tjapi-data:/app/data
+    healthcheck:
+      # debian-slim ships bash; use its /dev/tcp to check the port with no extra tools.
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/8080' || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  tjapi-data:
