@@ -80,7 +80,7 @@ export function createApi(baseUrl: string, token?: string | null) {
     return parseResponse<T>(res);
   }
 
-  function buildQuery(filters?: Record<string, unknown>): string {
+  function buildQuery(filters?: object): string {
     if (!filters) return '';
     const params = new URLSearchParams();
     Object.entries(filters).forEach(([k, v]) => {
