@@ -139,10 +139,23 @@ systemctl list-timers | grep trading-journal   # verify next run
 /opt/trading-journal-api/backup.sh              # run once now to test
 ```
 
-Docker: point the script at the volume mount and cron it on the host, e.g.
-`TJ_DB=/var/lib/docker/volumes/backend_tjapi-data/_data/journal.db backup.sh`,
-or run `docker compose exec api sqlite3 /app/data/journal.db ".backup '/app/data/backup.db'"`
-and copy it out. Store copies off-box (e.g. `rclone`/`scp`) for real safety.
+Docker: use `deploy/docker-backup.sh` — it runs a throwaway container that shares
+the API container's data volume (`--volumes-from tjapi`), takes a consistent
+`sqlite3 .backup` snapshot, gzips it, and rotates (keeps 14). Schedule it daily
+with cron:
+
+```bash
+chmod +x code/backend/deploy/docker-backup.sh
+./code/backend/deploy/docker-backup.sh          # test once -> ~/backups/journal/
+
+crontab -e
+# daily at 03:30:
+30 3 * * * $HOME/stacks/journal/code/backend/deploy/docker-backup.sh >> $HOME/backups/journal/backup.log 2>&1
+```
+
+Restore: `gunzip -k journal-YYYYMMDD-HHMMSS.db.gz`, stop the container, copy the
+`.db` back into the volume, restart. Store copies off-box (`rclone`/`scp`) for
+real safety.
 
 ---
 
