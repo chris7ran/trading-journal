@@ -38,7 +38,12 @@ async fn main() -> anyhow::Result<()> {
         .with_context(|| format!("failed to bind {bind_addr}"))?;
 
     tracing::info!("trading-journal-api listening on {bind_addr}");
-    axum::serve(listener, app).await.context("server error")?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
+    .context("server error")?;
 
     Ok(())
 }

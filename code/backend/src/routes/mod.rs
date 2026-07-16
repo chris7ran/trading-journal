@@ -8,8 +8,12 @@ pub mod setups;
 pub mod stats;
 pub mod trades;
 
+use std::sync::Arc;
+
 use axum::routing::{get, post, put};
 use axum::Router;
+use tower_governor::governor::GovernorConfigBuilder;
+use tower_governor::GovernorLayer;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 
@@ -19,6 +23,17 @@ use crate::state::AppState;
 /// Build the full application router.
 pub fn build_router(state: AppState) -> Router {
     let cors = build_cors(&state.config.cors_allowed_origins);
+
+    // Rate limit for `/auth/login`: burst of 5 attempts, then one every 12s
+    // (~5 per minute steady state), keyed by peer IP. Brute-force guard — the
+    // tailnet's WireGuard/ACL layer authenticates devices, not login attempts.
+    let login_rate_limit = Arc::new(
+        GovernorConfigBuilder::default()
+            .per_second(12)
+            .burst_size(5)
+            .finish()
+            .expect("valid governor rate-limit config"),
+    );
 
     // Routes that require a valid JWT.
     let protected = Router::new()
@@ -47,7 +62,12 @@ pub fn build_router(state: AppState) -> Router {
     // Public routes (no auth).
     let public = Router::new()
         .route("/health", get(health::health))
-        .route("/auth/login", post(auth_handlers::login));
+        .route(
+            "/auth/login",
+            post(auth_handlers::login).layer(GovernorLayer {
+                config: login_rate_limit,
+            }),
+        );
 
     public
         .merge(protected)
