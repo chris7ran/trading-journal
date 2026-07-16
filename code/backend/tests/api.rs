@@ -70,7 +70,11 @@ fn login_request(password: &str) -> Request<Body> {
 }
 
 async fn login(app: &axum::Router) -> String {
-    let res = app.clone().oneshot(login_request(TEST_PASSWORD)).await.unwrap();
+    let res = app
+        .clone()
+        .oneshot(login_request(TEST_PASSWORD))
+        .await
+        .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
     body_json(res).await["token"].as_str().unwrap().to_string()
 }
@@ -294,8 +298,14 @@ async fn trade_stats_aggregates_correctly() {
             .unwrap()
     };
 
-    app.clone().oneshot(create_trade("GER40", 100.0)).await.unwrap();
-    app.clone().oneshot(create_trade("GER40", -40.0)).await.unwrap();
+    app.clone()
+        .oneshot(create_trade("GER40", 100.0))
+        .await
+        .unwrap();
+    app.clone()
+        .oneshot(create_trade("GER40", -40.0))
+        .await
+        .unwrap();
 
     let stats = Request::builder()
         .uri("/trades/stats")
@@ -327,9 +337,14 @@ async fn trade_stats_handles_wins_only() {
         .uri("/trades")
         .header("content-type", "application/json")
         .header("authorization", format!("Bearer {token}"))
-        .body(Body::from(json!({ "symbol": "GER40", "pnl": 250.0 }).to_string()))
+        .body(Body::from(
+            json!({ "symbol": "GER40", "pnl": 250.0 }).to_string(),
+        ))
         .unwrap();
-    assert_eq!(app.clone().oneshot(create).await.unwrap().status(), StatusCode::CREATED);
+    assert_eq!(
+        app.clone().oneshot(create).await.unwrap().status(),
+        StatusCode::CREATED
+    );
 
     let stats = Request::builder()
         .uri("/trades/stats")

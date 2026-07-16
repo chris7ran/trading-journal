@@ -249,9 +249,9 @@ pub struct UpdateSetup {
 #[derive(Debug, Clone, Serialize)]
 pub struct EcoEvent {
     pub title: String,
-    pub currency: String,   // e.g. USD, EUR
-    pub impact: String,     // "red" (high) or "orange" (medium)
-    pub date: String,       // ISO-8601 with offset
+    pub currency: String, // e.g. USD, EUR
+    pub impact: String,   // "red" (high) or "orange" (medium)
+    pub date: String,     // ISO-8601 with offset
     pub forecast: Option<String>,
     pub previous: Option<String>,
 }
@@ -270,11 +270,11 @@ pub struct NewsItem {
 /// small history for a sparkline.
 #[derive(Debug, Clone, Serialize)]
 pub struct EconIndicator {
-    pub label: String,   // "Inflation (CPI)" | "Or (XAU/USD)"
-    pub region: String,  // "États-Unis" | "Or" | "Taux US" ...
-    pub unit: String,    // "%" | "$"
-    pub year: String,    // most recent year (macro) or date (market)
-    pub value: f64,      // most recent value
+    pub label: String,  // "Inflation (CPI)" | "Or (XAU/USD)"
+    pub region: String, // "États-Unis" | "Or" | "Taux US" ...
+    pub unit: String,   // "%" | "$"
+    pub year: String,   // most recent year (macro) or date (market)
+    pub value: f64,     // most recent value
     pub previous: Option<f64>,
     pub history: Vec<f64>, // oldest -> newest, for a sparkline
     pub category: String,  // "macro" | "market"

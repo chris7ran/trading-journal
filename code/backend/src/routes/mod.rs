@@ -38,18 +38,30 @@ pub fn build_router(state: AppState) -> Router {
     // Routes that require a valid JWT.
     let protected = Router::new()
         .route("/auth/verify-token", post(auth_handlers::verify_token))
-        .route("/trades", get(trades::list_trades).post(trades::create_trade))
+        .route(
+            "/trades",
+            get(trades::list_trades).post(trades::create_trade),
+        )
         // Static segment registered before the `:id` param route.
         .route("/trades/stats", get(stats::trade_stats))
         .route("/trades/import/csv", post(import::import_csv))
-        .route("/trades/:id", get(trades::get_trade).put(trades::update_trade))
-        .route("/accounts", get(accounts::list_accounts).post(accounts::create_account))
+        .route(
+            "/trades/:id",
+            get(trades::get_trade).put(trades::update_trade),
+        )
+        .route(
+            "/accounts",
+            get(accounts::list_accounts).post(accounts::create_account),
+        )
         .route("/accounts/:id", put(accounts::update_account))
         .route(
             "/accounts/:id/rules",
             get(accounts::get_rules).put(accounts::upsert_rules),
         )
-        .route("/setups", get(setups::list_setups).post(setups::create_setup))
+        .route(
+            "/setups",
+            get(setups::list_setups).post(setups::create_setup),
+        )
         .route("/setups/:id", put(setups::update_setup))
         .route("/macro/calendar", get(market::calendar))
         .route("/macro/news", get(market::news))
@@ -60,14 +72,12 @@ pub fn build_router(state: AppState) -> Router {
         ));
 
     // Public routes (no auth).
-    let public = Router::new()
-        .route("/health", get(health::health))
-        .route(
-            "/auth/login",
-            post(auth_handlers::login).layer(GovernorLayer {
-                config: login_rate_limit,
-            }),
-        );
+    let public = Router::new().route("/health", get(health::health)).route(
+        "/auth/login",
+        post(auth_handlers::login).layer(GovernorLayer {
+            config: login_rate_limit,
+        }),
+    );
 
     public
         .merge(protected)

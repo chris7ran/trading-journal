@@ -43,10 +43,7 @@ pub async fn list_trades(
     qb.push(" LIMIT ").push_bind(limit);
     qb.push(" OFFSET ").push_bind(offset);
 
-    let trades = qb
-        .build_query_as::<Trade>()
-        .fetch_all(&state.pool)
-        .await?;
+    let trades = qb.build_query_as::<Trade>().fetch_all(&state.pool).await?;
 
     Ok(Json(trades))
 }
@@ -56,7 +53,9 @@ pub async fn get_trade(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> AppResult<Json<Trade>> {
-    let trade = fetch_trade(&state.pool, &id).await?.ok_or(AppError::NotFound)?;
+    let trade = fetch_trade(&state.pool, &id)
+        .await?
+        .ok_or(AppError::NotFound)?;
     Ok(Json(trade))
 }
 
@@ -176,7 +175,9 @@ pub async fn update_trade(
         qb.build().execute(&state.pool).await?;
     }
 
-    let trade = fetch_trade(&state.pool, &id).await?.ok_or(AppError::NotFound)?;
+    let trade = fetch_trade(&state.pool, &id)
+        .await?
+        .ok_or(AppError::NotFound)?;
     Ok(Json(trade))
 }
 

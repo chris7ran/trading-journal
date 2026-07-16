@@ -29,11 +29,29 @@ static ECON_CACHE: Mutex<Option<(Instant, Vec<EconIndicator>)>> = Mutex::new(Non
 
 // World Bank indicators (free, no key): (label, region, ISO3, code, unit).
 const WB_INDICATORS: &[(&str, &str, &str, &str, &str)] = &[
-    ("Inflation (CPI)", "États-Unis", "USA", "FP.CPI.TOTL.ZG", "%"),
+    (
+        "Inflation (CPI)",
+        "États-Unis",
+        "USA",
+        "FP.CPI.TOTL.ZG",
+        "%",
+    ),
     ("Chômage", "États-Unis", "USA", "SL.UEM.TOTL.ZS", "%"),
-    ("Croissance PIB", "États-Unis", "USA", "NY.GDP.MKTP.KD.ZG", "%"),
+    (
+        "Croissance PIB",
+        "États-Unis",
+        "USA",
+        "NY.GDP.MKTP.KD.ZG",
+        "%",
+    ),
     ("Inflation (CPI)", "Zone euro", "EMU", "FP.CPI.TOTL.ZG", "%"),
-    ("Croissance PIB", "Allemagne", "DEU", "NY.GDP.MKTP.KD.ZG", "%"),
+    (
+        "Croissance PIB",
+        "Allemagne",
+        "DEU",
+        "NY.GDP.MKTP.KD.ZG",
+        "%",
+    ),
     ("Chômage", "Allemagne", "DEU", "SL.UEM.TOTL.ZS", "%"),
     ("Inflation (CPI)", "Japon", "JPN", "FP.CPI.TOTL.ZG", "%"),
     ("Chômage", "Japon", "JPN", "SL.UEM.TOTL.ZS", "%"),
@@ -46,14 +64,25 @@ const CALENDAR_URLS: &[&str] = &["https://nfs.faireconomy.media/ff_calendar_this
 // Public RSS feeds by theme (no key). Investing.com: news_1=Forex, news_95=macro
 // indicators, news_25=stock/indices. MarketWatch = US/Wall Street.
 const NEWS_FEEDS: &[(&str, &str)] = &[
-    ("Investing · Forex", "https://www.investing.com/rss/news_1.rss"),
-    ("Investing · Macro", "https://www.investing.com/rss/news_95.rss"),
-    ("Investing · Indices", "https://www.investing.com/rss/news_25.rss"),
-    ("MarketWatch", "https://feeds.content.dowjones.io/public/rss/mw_topstories"),
+    (
+        "Investing · Forex",
+        "https://www.investing.com/rss/news_1.rss",
+    ),
+    (
+        "Investing · Macro",
+        "https://www.investing.com/rss/news_95.rss",
+    ),
+    (
+        "Investing · Indices",
+        "https://www.investing.com/rss/news_25.rss",
+    ),
+    (
+        "MarketWatch",
+        "https://feeds.content.dowjones.io/public/rss/mw_topstories",
+    ),
 ];
 
-const USER_AGENT: &str =
-    "Mozilla/5.0 (compatible; TradingJournal/0.1; +https://example.local)";
+const USER_AGENT: &str = "Mozilla/5.0 (compatible; TradingJournal/0.1; +https://example.local)";
 
 fn http_client() -> Result<reqwest::Client, AppError> {
     reqwest::Client::builder()
@@ -153,21 +182,75 @@ pub async fn calendar() -> AppResult<Json<Vec<EcoEvent>>> {
                     return Ok(Json(data.clone()));
                 }
             }
-            Err(AppError::Other(anyhow::anyhow!("calendrier injoignable — {reason}")))
+            Err(AppError::Other(anyhow::anyhow!(
+                "calendrier injoignable — {reason}"
+            )))
         }
     }
 }
 
 const BULLISH: &[&str] = &[
-    "surge", "surges", "rally", "rallies", "jump", "jumps", "gain", "gains", "rise", "rises",
-    "soar", "soars", "beat", "beats", "record high", "upgrade", "optimism", "boost", "strong",
-    "rebound", "recover", "recovers", "climb", "climbs", "tops", "bullish", "outperform",
+    "surge",
+    "surges",
+    "rally",
+    "rallies",
+    "jump",
+    "jumps",
+    "gain",
+    "gains",
+    "rise",
+    "rises",
+    "soar",
+    "soars",
+    "beat",
+    "beats",
+    "record high",
+    "upgrade",
+    "optimism",
+    "boost",
+    "strong",
+    "rebound",
+    "recover",
+    "recovers",
+    "climb",
+    "climbs",
+    "tops",
+    "bullish",
+    "outperform",
 ];
 const BEARISH: &[&str] = &[
-    "fall", "falls", "drop", "drops", "plunge", "plunges", "slump", "slumps", "crash", "fear",
-    "fears", "recession", "downgrade", "miss", "misses", "weak", "selloff", "sell-off", "tumble",
-    "tumbles", "warning", "warn", "sink", "sinks", "loss", "losses", "bearish", "slowdown",
-    "decline", "declines", "cut", "cuts",
+    "fall",
+    "falls",
+    "drop",
+    "drops",
+    "plunge",
+    "plunges",
+    "slump",
+    "slumps",
+    "crash",
+    "fear",
+    "fears",
+    "recession",
+    "downgrade",
+    "miss",
+    "misses",
+    "weak",
+    "selloff",
+    "sell-off",
+    "tumble",
+    "tumbles",
+    "warning",
+    "warn",
+    "sink",
+    "sinks",
+    "loss",
+    "losses",
+    "bearish",
+    "slowdown",
+    "decline",
+    "declines",
+    "cut",
+    "cuts",
 ];
 
 /// Very small lexicon-based sentiment for a headline.
@@ -212,10 +295,7 @@ async fn fetch_news_items(client: &reqwest::Client) -> Vec<NewsItem> {
             if title.is_empty() || url.is_empty() {
                 continue;
             }
-            let published_at = entry
-                .published
-                .or(entry.updated)
-                .map(|d| d.to_rfc3339());
+            let published_at = entry.published.or(entry.updated).map(|d| d.to_rfc3339());
             let sentiment = sentiment_of(&title).to_string();
             items.push(NewsItem {
                 title,
@@ -266,7 +346,7 @@ pub async fn news() -> AppResult<Json<Vec<NewsItem>>> {
 async fn fetch_economy(client: &reqwest::Client) -> Vec<EconIndicator> {
     let mut out: Vec<EconIndicator> = Vec::new();
 
-    for (label, region, iso, code, unit) in WB_INDICATORS.iter().copied() {
+    for (label, region, iso, code, unit) in WB_INDICATORS {
         let url = format!(
             "https://api.worldbank.org/v2/country/{iso}/indicator/{code}?format=json&per_page=8&mrv=8"
         );
@@ -323,7 +403,13 @@ const MARKETS: &[(&str, &str, &str, &str, &str)] = &[
     ("Or (XAU/USD)", "Or", "$", "xauusd", "GC=F"),
     ("Pétrole (WTI)", "Pétrole", "$", "cl.f", "CL=F"),
     ("Rendement 10 ans US", "Taux US", "%", "10usy.b", "^TNX"),
-    ("Fed · taux court US (proxy)", "Taux US", "%", "2usy.b", "^IRX"),
+    (
+        "Fed · taux court US (proxy)",
+        "Taux US",
+        "%",
+        "2usy.b",
+        "^IRX",
+    ),
 ];
 
 // Browser-like UA: some market endpoints return empty for non-browser agents.
@@ -357,7 +443,10 @@ async fn stooq_series(client: &reqwest::Client, symbol: &str) -> Option<Vec<(Str
             continue;
         }
         let fields: Vec<&str> = line.split(',').collect();
-        let close = match fields.get(close_idx).and_then(|s| s.trim().parse::<f64>().ok()) {
+        let close = match fields
+            .get(close_idx)
+            .and_then(|s| s.trim().parse::<f64>().ok())
+        {
             Some(v) => v,
             None => continue,
         };
@@ -377,7 +466,8 @@ async fn stooq_series(client: &reqwest::Client, symbol: &str) -> Option<Vec<(Str
 /// Daily (date, close) pairs from Yahoo Finance chart API, oldest -> newest.
 async fn yahoo_series(client: &reqwest::Client, symbol: &str) -> Option<Vec<(String, f64)>> {
     let enc = symbol.replace('^', "%5E");
-    let url = format!("https://query1.finance.yahoo.com/v8/finance/chart/{enc}?interval=1d&range=1mo");
+    let url =
+        format!("https://query1.finance.yahoo.com/v8/finance/chart/{enc}?interval=1d&range=1mo");
     let v: serde_json::Value = client
         .get(&url)
         .header(reqwest::header::USER_AGENT, MARKET_UA)
@@ -437,7 +527,11 @@ async fn fetch_markets(client: &reqwest::Client) -> Vec<EconIndicator> {
         let start = pairs.len().saturating_sub(30);
         let recent = &pairs[start..];
         let (year, mut value) = recent[recent.len() - 1].clone();
-        let mut previous = if recent.len() >= 2 { Some(recent[recent.len() - 2].1) } else { None };
+        let mut previous = if recent.len() >= 2 {
+            Some(recent[recent.len() - 2].1)
+        } else {
+            None
+        };
         let mut history: Vec<f64> = recent.iter().map(|(_, v)| *v).collect();
 
         // Some yield feeds quote x10 (e.g. 42.5 for 4.25%). Normalise to percent.
@@ -468,7 +562,13 @@ async fn fetch_markets(client: &reqwest::Client) -> Vec<EconIndicator> {
 // FRED monthly US series (needs a free API key in FRED_API_KEY):
 // (label, region, unit, series_id, units). units "pc1" = % change vs year ago.
 const FRED_SERIES: &[(&str, &str, &str, &str, &str)] = &[
-    ("Inflation US (CPI a/a)", "États-Unis", "%", "CPIAUCSL", "pc1"),
+    (
+        "Inflation US (CPI a/a)",
+        "États-Unis",
+        "%",
+        "CPIAUCSL",
+        "pc1",
+    ),
     ("Chômage US", "États-Unis", "%", "UNRATE", "lin"),
     ("Taux directeur Fed", "États-Unis", "%", "FEDFUNDS", "lin"),
     ("Croissance PIB US (a/a)", "États-Unis", "%", "GDPC1", "pc1"),
@@ -482,7 +582,7 @@ async fn fetch_fred(client: &reqwest::Client) -> Vec<EconIndicator> {
     };
 
     let mut out: Vec<EconIndicator> = Vec::new();
-    for (label, region, unit, series, units) in FRED_SERIES.iter().copied() {
+    for (label, region, unit, series, units) in FRED_SERIES {
         let url = format!(
             "https://api.stlouisfed.org/fred/series/observations?series_id={series}&api_key={key}&file_type=json&units={units}&sort_order=desc&limit=24"
         );
@@ -511,8 +611,15 @@ async fn fetch_fred(client: &reqwest::Client) -> Vec<EconIndicator> {
         // Observations are newest-first (sort_order=desc); value "." means missing.
         let mut pairs: Vec<(String, f64)> = Vec::new();
         for o in obs {
-            let date = o.get("date").and_then(|d| d.as_str()).unwrap_or_default().to_string();
-            let val = o.get("value").and_then(|x| x.as_str()).and_then(|s| s.parse::<f64>().ok());
+            let date = o
+                .get("date")
+                .and_then(|d| d.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let val = o
+                .get("value")
+                .and_then(|x| x.as_str())
+                .and_then(|s| s.parse::<f64>().ok());
             if let Some(v) = val {
                 pairs.push((date, v));
             }
