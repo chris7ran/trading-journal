@@ -85,7 +85,9 @@ pub async fn update_account(
         qb.build().execute(&state.pool).await?;
     }
 
-    let account = fetch_account(&state.pool, &id).await?.ok_or(AppError::NotFound)?;
+    let account = fetch_account(&state.pool, &id)
+        .await?
+        .ok_or(AppError::NotFound)?;
     Ok(Json(account))
 }
 

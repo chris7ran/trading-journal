@@ -31,8 +31,12 @@ pub async fn login(
         return Err(AppError::Unauthorized);
     }
 
-    let token = issue_token(&state.config.jwt_secret, "admin", state.config.jwt_ttl_hours)
-        .map_err(AppError::Other)?;
+    let token = issue_token(
+        &state.config.jwt_secret,
+        "admin",
+        state.config.jwt_ttl_hours,
+    )
+    .map_err(AppError::Other)?;
 
     Ok(Json(TokenResponse {
         token,

@@ -1,9 +1,11 @@
 //! In-process integration tests: build the real router against an in-memory
 //! SQLite DB and exercise auth + CRUD + CSV import end to end.
 
+use std::net::SocketAddr;
 use std::str::FromStr;
 
 use axum::body::Body;
+use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
@@ -52,15 +54,27 @@ async fn body_json(response: axum::response::Response) -> Value {
     serde_json::from_slice(&bytes).unwrap_or(Value::Null)
 }
 
-async fn login(app: &axum::Router) -> String {
-    let req = Request::builder()
+// The rate-limit layer on `/auth/login` keys on the peer IP from
+// `ConnectInfo`, which `axum::serve` injects in production but `.oneshot()`
+// does not — so tests must insert it manually.
+fn login_request(password: &str) -> Request<Body> {
+    let mut req = Request::builder()
         .method("POST")
         .uri("/auth/login")
         .header("content-type", "application/json")
-        .body(Body::from(json!({ "password": TEST_PASSWORD }).to_string()))
+        .body(Body::from(json!({ "password": password }).to_string()))
         .unwrap();
+    req.extensions_mut()
+        .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))));
+    req
+}
 
-    let res = app.clone().oneshot(req).await.unwrap();
+async fn login(app: &axum::Router) -> String {
+    let res = app
+        .clone()
+        .oneshot(login_request(TEST_PASSWORD))
+        .await
+        .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
     body_json(res).await["token"].as_str().unwrap().to_string()
 }
@@ -68,14 +82,22 @@ async fn login(app: &axum::Router) -> String {
 #[tokio::test]
 async fn login_rejects_wrong_password() {
     let app = test_app().await;
-    let req = Request::builder()
-        .method("POST")
-        .uri("/auth/login")
-        .header("content-type", "application/json")
-        .body(Body::from(json!({ "password": "wrong" }).to_string()))
-        .unwrap();
-    let res = app.oneshot(req).await.unwrap();
+    let res = app.oneshot(login_request("wrong")).await.unwrap();
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn login_rate_limited_after_burst() {
+    let app = test_app().await;
+
+    // Burst size is 5: the first 5 attempts reach the handler (and are
+    // rejected for a wrong password), the 6th is throttled by the limiter.
+    for _ in 0..5 {
+        let res = app.clone().oneshot(login_request("wrong")).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+    let res = app.clone().oneshot(login_request("wrong")).await.unwrap();
+    assert_eq!(res.status(), StatusCode::TOO_MANY_REQUESTS);
 }
 
 #[tokio::test]
@@ -276,8 +298,14 @@ async fn trade_stats_aggregates_correctly() {
             .unwrap()
     };
 
-    app.clone().oneshot(create_trade("GER40", 100.0)).await.unwrap();
-    app.clone().oneshot(create_trade("GER40", -40.0)).await.unwrap();
+    app.clone()
+        .oneshot(create_trade("GER40", 100.0))
+        .await
+        .unwrap();
+    app.clone()
+        .oneshot(create_trade("GER40", -40.0))
+        .await
+        .unwrap();
 
     let stats = Request::builder()
         .uri("/trades/stats")
@@ -309,9 +337,14 @@ async fn trade_stats_handles_wins_only() {
         .uri("/trades")
         .header("content-type", "application/json")
         .header("authorization", format!("Bearer {token}"))
-        .body(Body::from(json!({ "symbol": "GER40", "pnl": 250.0 }).to_string()))
+        .body(Body::from(
+            json!({ "symbol": "GER40", "pnl": 250.0 }).to_string(),
+        ))
         .unwrap();
-    assert_eq!(app.clone().oneshot(create).await.unwrap().status(), StatusCode::CREATED);
+    assert_eq!(
+        app.clone().oneshot(create).await.unwrap().status(),
+        StatusCode::CREATED
+    );
 
     let stats = Request::builder()
         .uri("/trades/stats")

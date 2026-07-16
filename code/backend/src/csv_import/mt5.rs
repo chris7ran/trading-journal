@@ -48,7 +48,14 @@ pub struct ParseResult {
 
 /// Section titles that mark the end of the Positions block (lowercased).
 const SECTION_KEYWORDS: &[&str] = &[
-    "positions", "position", "ordres", "orders", "transactions", "deals", "résumé", "resume",
+    "positions",
+    "position",
+    "ordres",
+    "orders",
+    "transactions",
+    "deals",
+    "résumé",
+    "resume",
     "summary",
 ];
 
@@ -80,8 +87,8 @@ pub fn parse_xlsx(bytes: &[u8], account_id: &str) -> Result<ParseResult, String>
     // MT5 writes the XLSX's internal XML as UTF-16, which calamine/quick-xml
     // cannot read ("Unexpected end of xml"). Re-pack the archive with its XML
     // entries transcoded to UTF-8 before handing it to calamine.
-    let normalized = normalize_xlsx_encoding(bytes)
-        .map_err(|e| format!("préparation XLSX impossible: {e}"))?;
+    let normalized =
+        normalize_xlsx_encoding(bytes).map_err(|e| format!("préparation XLSX impossible: {e}"))?;
 
     let cursor = Cursor::new(normalized);
     let mut workbook: Xlsx<_> =
@@ -184,12 +191,7 @@ fn parse_rows(rows: Vec<Vec<String>>, account_id: &str) -> Result<ParseResult, S
 fn locate_positions_header(rows: &[Vec<String>]) -> Option<usize> {
     // Primary: a title row whose first cell is exactly "positions".
     for (i, row) in rows.iter().enumerate() {
-        if row
-            .first()
-            .map(|s| s.trim().to_lowercase())
-            .as_deref()
-            == Some("positions")
-        {
+        if row.first().map(|s| s.trim().to_lowercase()).as_deref() == Some("positions") {
             // Header is the next non-empty row.
             for (j, candidate) in rows.iter().enumerate().skip(i + 1) {
                 if candidate.iter().any(|c| !c.is_empty()) {
@@ -248,7 +250,8 @@ impl ColumnMap {
         let times = find_all(&["heure", "time"]);
         let prices = find_all(&["prix", "price"]);
 
-        let open_time = find(&["heure d'ouverture", "open time"]).or_else(|| times.first().copied());
+        let open_time =
+            find(&["heure d'ouverture", "open time"]).or_else(|| times.first().copied());
         let close_time = find(&["heure de clôture", "heure de cloture", "close time"])
             .or_else(|| times.get(1).copied());
         let open_price =
@@ -305,17 +308,38 @@ fn normalize_xlsx_encoding(bytes: &[u8]) -> Result<Vec<u8>, String> {
         let options: FileOptions =
             FileOptions::default().compression_method(CompressionMethod::Stored);
 
+        // Zip-bomb guard: cap the decompressed bytes we read, per entry and
+        // cumulatively, so a small malicious .xlsx can't blow up memory.
+        const MAX_ENTRY_BYTES: u64 = 25 * 1024 * 1024; // 25 MiB per entry
+        const MAX_TOTAL_BYTES: u64 = 100 * 1024 * 1024; // 100 MiB total
+        let mut total_decompressed: u64 = 0;
+
         for i in 0..archive.len() {
             let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
             let name = entry.name().to_string();
 
             if name.ends_with('/') {
-                zip.add_directory(name, options).map_err(|e| e.to_string())?;
+                zip.add_directory(name, options)
+                    .map_err(|e| e.to_string())?;
                 continue;
             }
 
+            // Read at most `cap + 1` bytes; if we hit that, the entry is over
+            // budget and we reject the whole file.
+            let cap = MAX_TOTAL_BYTES
+                .saturating_sub(total_decompressed)
+                .min(MAX_ENTRY_BYTES);
             let mut content = Vec::new();
-            entry.read_to_end(&mut content).map_err(|e| e.to_string())?;
+            let read = (&mut entry)
+                .take(cap + 1)
+                .read_to_end(&mut content)
+                .map_err(|e| e.to_string())?;
+            if read as u64 > cap {
+                return Err(format!(
+                    "xlsx entry '{name}' exceeds the decompression limit (possible zip bomb)"
+                ));
+            }
+            total_decompressed += read as u64;
             let content = transcode_utf16(content);
 
             zip.start_file(name, options).map_err(|e| e.to_string())?;
@@ -346,7 +370,10 @@ fn transcode_utf16(bytes: Vec<u8>) -> Vec<u8> {
     };
 
     match decoded {
-        Some(s) => s.replace("UTF-16", "UTF-8").replace("utf-16", "UTF-8").into_bytes(),
+        Some(s) => s
+            .replace("UTF-16", "UTF-8")
+            .replace("utf-16", "UTF-8")
+            .into_bytes(),
         None => bytes,
     }
 }
@@ -393,8 +420,7 @@ fn normalize_datetime(raw: String) -> String {
 /// Parse a numeric cell, tolerating spaces and comma decimals.
 fn parse_number(raw: &str) -> Option<f64> {
     let cleaned: String = raw
-        .replace(' ', "")
-        .replace('\u{a0}', "") // non-breaking space
+        .replace([' ', '\u{a0}'], "") // space + non-breaking space
         .replace(',', ".");
     cleaned.parse::<f64>().ok()
 }
