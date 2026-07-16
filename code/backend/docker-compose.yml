@@ -12,6 +12,15 @@ services:
     image: trading-journal-api:latest
     container_name: tjapi
     restart: unless-stopped
+    # Hardening: read-only root FS (only the data volume + /tmp are writable),
+    # drop all Linux capabilities, and forbid privilege escalation.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     ports:
       # Loopback only: reachable via Tailscale (tailscale serve), never on the LAN.
       - "127.0.0.1:8090:8080"
