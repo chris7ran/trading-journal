@@ -305,6 +305,12 @@ fn normalize_xlsx_encoding(bytes: &[u8]) -> Result<Vec<u8>, String> {
         let options: FileOptions =
             FileOptions::default().compression_method(CompressionMethod::Stored);
 
+        // Zip-bomb guard: cap the decompressed bytes we read, per entry and
+        // cumulatively, so a small malicious .xlsx can't blow up memory.
+        const MAX_ENTRY_BYTES: u64 = 25 * 1024 * 1024; // 25 MiB per entry
+        const MAX_TOTAL_BYTES: u64 = 100 * 1024 * 1024; // 100 MiB total
+        let mut total_decompressed: u64 = 0;
+
         for i in 0..archive.len() {
             let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
             let name = entry.name().to_string();
@@ -314,8 +320,22 @@ fn normalize_xlsx_encoding(bytes: &[u8]) -> Result<Vec<u8>, String> {
                 continue;
             }
 
+            // Read at most `cap + 1` bytes; if we hit that, the entry is over
+            // budget and we reject the whole file.
+            let cap = MAX_TOTAL_BYTES
+                .saturating_sub(total_decompressed)
+                .min(MAX_ENTRY_BYTES);
             let mut content = Vec::new();
-            entry.read_to_end(&mut content).map_err(|e| e.to_string())?;
+            let read = (&mut entry)
+                .take(cap + 1)
+                .read_to_end(&mut content)
+                .map_err(|e| e.to_string())?;
+            if read as u64 > cap {
+                return Err(format!(
+                    "xlsx entry '{name}' exceeds the decompression limit (possible zip bomb)"
+                ));
+            }
+            total_decompressed += read as u64;
             let content = transcode_utf16(content);
 
             zip.start_file(name, options).map_err(|e| e.to_string())?;
