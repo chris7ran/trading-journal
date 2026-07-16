@@ -37,18 +37,18 @@ rand_core = { version = "0.6.4", features = ["getrandom"] }
 
 # Import parsing
 csv = "1"
-calamine = "0.24"   # read MT5 history exports directly from .xlsx
+calamine = "0.36"   # read MT5 history exports directly from .xlsx
 zip = "0.6"         # re-pack MT5 .xlsx after transcoding its UTF-16 XML to UTF-8
 
 # Macro data (economic calendar + news)
-reqwest = { version = "0.11", default-features = false, features = [
+reqwest = { version = "0.12", default-features = false, features = [
     "json",
     "rustls-tls",
     "gzip",
     "brotli",
     "deflate",
 ] }
-feed-rs = "1"
+feed-rs = "2"
 
 # Errors & logging
 thiserror = "1"
