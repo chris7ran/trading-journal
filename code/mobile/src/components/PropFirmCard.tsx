@@ -119,8 +119,8 @@ export function PropFirmCard({ accountId, trades }: { accountId: string | null; 
             <Bar label="Drawdown global" ratio={s.drawdownUsed} color={s.drawdownUsed >= 0.8 ? colors.red : colors.amber} />
           ) : null}
           <Bar
-            label={`Consistance (max ${Math.round(s.consistencyLimit * 100)}%)`}
-            ratio={s.consistencyLimit > 0 ? s.consistencyPct / s.consistencyLimit : 0}
+            label={`Consistance · limite ${Math.round(s.consistencyLimit * 100)}%`}
+            ratio={s.consistencyPct}
             color={s.consistencyOk ? colors.green : colors.red}
           />
         </>

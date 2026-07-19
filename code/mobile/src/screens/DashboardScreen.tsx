@@ -76,6 +76,10 @@ export default function DashboardScreen() {
   const rrr = avgLoss !== 0 ? avgWin / Math.abs(avgLoss) : null;
   const pf = stats?.profit_factor ?? null;
   const expectancy = useMemo(() => riskMetrics(trades).expectancy, [trades]);
+  const totalFees = useMemo(
+    () => trades.reduce((s, t) => s + (t.commission ?? 0) + (t.swap ?? 0), 0),
+    [trades],
+  );
 
   const balanceSeries = useMemo(
     () => balanceSeriesForPeriod(trades, startBalance, period),
@@ -147,6 +151,8 @@ export default function DashboardScreen() {
             <Kpi label="Expectancy / trade" value={moneySigned(expectancy)} color={expectancy >= 0 ? neon.green : neon.red} glowIt />
             <Kpi label="Profit factor" value={pf === null ? '—' : pf.toFixed(2)} />
           </View>
+
+          <Text style={styles.feesLine}>Frais cumulés (commission + swap) · {moneySigned(totalFees)}</Text>
 
           <PropFirmCard accountId={accountId} trades={trades} />
         </>
@@ -331,6 +337,7 @@ const styles = StyleSheet.create({
     padding: 14,
   },
   kpiVal: { color: neon.text, fontSize: 18, fontWeight: '700', marginTop: 4 },
+  feesLine: { color: neon.muted, fontSize: 12, marginHorizontal: 18, marginTop: 10 },
   gaugeRow: { flexDirection: 'row', alignItems: 'center' },
   rrr: { color: neon.text, fontSize: 26, fontWeight: '700', marginTop: 2 },
   note: { color: neon.muted, fontSize: 11, marginTop: 5, lineHeight: 16 },

@@ -99,6 +99,9 @@ export interface ImportSummary {
   skipped_duplicates: number;
   failed: number;
   warnings: string[];
+  /** Account the trades landed in (resolved from the report or chosen). */
+  account_id?: string;
+  account_name?: string;
 }
 
 /** Payload for POST /trades (manual entry). All fields optional except symbol. */

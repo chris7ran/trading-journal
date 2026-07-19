@@ -218,6 +218,71 @@ Ticket,Symbol,Type,Volume,Open Time,Open Price,Close Time,Close Price,Commission
 }
 
 #[tokio::test]
+async fn import_resolves_account_and_refreshes_fees() {
+    let app = test_app().await;
+    let token = login(&app).await;
+
+    let import = |csv: &'static str| {
+        Request::builder()
+            .method("POST")
+            .uri("/trades/import/csv")
+            .header("content-type", "text/csv")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::from(csv))
+            .unwrap()
+    };
+
+    // Report carrying its own account header; no ?account_id given.
+    let csv = "\
+Nom:,,,tran_christophe-INSTANT
+Compte:,,,\"314299306 (USD, GoatFunded-Server, real, Hedge)\"
+Positions
+Heure,Position,Symbole,Type,Volume,Prix,S / L,T / P,Heure,Prix,Commission,Echange,Profit
+2026.06.20 09:30:00,701,US30.x,buy,1,48000,0,0,2026.06.20 11:00:00,48100,0.0,-5.0,100.0";
+
+    let res = app.clone().oneshot(import(csv)).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let summary = body_json(res).await;
+    assert_eq!(summary["imported"], 1);
+    // Account was auto-created from the report's login number.
+    let account_id = summary["account_id"].as_str().unwrap().to_string();
+    assert_eq!(summary["account_name"], "314299306");
+
+    // Net P&L = 100.0 + 0.0 + (-5.0) = 95.0, on the resolved account.
+    let trades = list_trades(&app, &token).await;
+    assert_eq!(trades.len(), 1);
+    assert_eq!(trades[0]["pnl"], 95.0);
+    assert_eq!(trades[0]["account_id"], account_id);
+
+    // Re-import the same ticket with a heavier swap: refreshed, not duplicated.
+    let csv2 = "\
+Nom:,,,tran_christophe-INSTANT
+Compte:,,,\"314299306 (USD, GoatFunded-Server, real, Hedge)\"
+Positions
+Heure,Position,Symbole,Type,Volume,Prix,S / L,T / P,Heure,Prix,Commission,Echange,Profit
+2026.06.20 09:30:00,701,US30.x,buy,1,48000,0,0,2026.06.20 11:00:00,48100,0.0,-12.0,100.0";
+    let res = app.clone().oneshot(import(csv2)).await.unwrap();
+    let summary = body_json(res).await;
+    assert_eq!(summary["imported"], 0);
+    assert_eq!(summary["skipped_duplicates"], 1);
+
+    let trades = list_trades(&app, &token).await;
+    assert_eq!(trades.len(), 1); // still one row
+    assert_eq!(trades[0]["pnl"], 88.0); // 100 - 12, fees corrected
+}
+
+async fn list_trades(app: &axum::Router, token: &str) -> Vec<Value> {
+    let req = Request::builder()
+        .uri("/trades")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    body_json(res).await.as_array().unwrap().clone()
+}
+
+#[tokio::test]
 async fn accounts_create_list_and_rules() {
     let app = test_app().await;
     let token = login(&app).await;
