@@ -1,50 +1,50 @@
-// Home dashboard: gradient P&L header, discipline score, key metrics, and charts.
+// Neon "web 3.0" dashboard with two tabs:
+//   Account  = quick glance (balance, equity curve, prop-firm, key KPIs)
+//   Trading  = what to fix (win-rate gauge + RRR, avg win/loss, edge by $)
+// Signal only — no vanity metrics. Data comes from the real analytics helpers.
 
 import React, { useCallback, useMemo, useState } from 'react';
-import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
+import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 
-import type { Trade, TradeStats } from '../api/types';
+import type { Account, Trade, TradeStats } from '../api/types';
 import { ApiError } from '../api/client';
 import { useApi } from '../hooks/useApi';
 import { useAuth } from '../auth/AuthContext';
-import { colors, formatPnl, gradients, pnlColor, radius, spacing } from '../theme';
-import { ScoreGauge } from '../components/ScoreGauge';
-import { EquityCurve, PnlBars } from '../components/Charts';
-import { FilterBar } from '../components/FilterBar';
+import { glow, money, moneySigned, neon } from '../theme-neon';
+import { riskMetrics, setupPerformance, emotionBreakdown } from '../utils/analytics';
 import { AccountPicker } from '../components/AccountPicker';
 import { PropFirmCard } from '../components/PropFirmCard';
-import { HealthTrendCard, DayTimeCard, SetupPerfCard, TopSymbolsCard } from '../components/DashboardExtras';
-import { Section } from '../components/Section';
-import { dailyPnlSeries, equitySeries } from '../utils/series';
-import { computeScore, scoreLabel } from '../utils/score';
-import { durationBuckets, riskMetrics, typeBreakdown } from '../utils/analytics';
-import { DEFAULT_FILTERS, Filters, filtersToQuery } from '../utils/filters';
+import { NeonEquityChart, type Period } from '../components/neon/NeonEquityChart';
+import { NeonGauge } from '../components/neon/NeonGauge';
+
+type Tab = 'account' | 'trading';
 
 export default function DashboardScreen() {
   const api = useApi();
   const { signOut } = useAuth();
+  const [accountId, setAccountId] = useState<string | null>(null);
+  const [accounts, setAccounts] = useState<Account[]>([]);
   const [stats, setStats] = useState<TradeStats | null>(null);
   const [trades, setTrades] = useState<Trade[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
-  const [allSymbols, setAllSymbols] = useState<string[]>([]);
+  const [tab, setTab] = useState<Tab>('account');
+  const [period, setPeriod] = useState<Period>('ALL');
 
   const load = useCallback(async () => {
     setError(null);
     try {
-      const q = filtersToQuery(filters);
-      const [s, t] = await Promise.all([
+      const q = accountId ? { account_id: accountId } : {};
+      const [s, t, a] = await Promise.all([
         api.getStats(q),
         api.listTrades({ ...q, limit: 1000 }),
+        api.listAccounts(),
       ]);
       setStats(s);
       setTrades(t);
-      // Keep a stable, growing list of instruments for the filter chips.
-      setAllSymbols((prev) => Array.from(new Set([...prev, ...t.map((x) => x.symbol)])).sort());
+      setAccounts(a);
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) {
         await signOut();
@@ -55,7 +55,7 @@ export default function DashboardScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [api, signOut, filters]);
+  }, [api, signOut, accountId]);
 
   useFocusEffect(
     useCallback(() => {
@@ -63,201 +63,288 @@ export default function DashboardScreen() {
     }, [load]),
   );
 
-  const equity = useMemo(() => equitySeries(trades), [trades]);
-  const daily = useMemo(() => dailyPnlSeries(trades), [trades]);
-  const score = useMemo(() => computeScore(stats), [stats]);
-  const durations = useMemo(() => durationBuckets(trades), [trades]);
-  const types = useMemo(() => typeBreakdown(trades), [trades]);
-  const risk = useMemo(() => riskMetrics(trades), [trades]);
+  const account = useMemo(() => accounts.find((a) => a.id === accountId) ?? null, [accounts, accountId]);
+  const startBalance = account?.balance ?? 100000;
+  const total = stats?.total_pnl ?? 0;
+  const equity = startBalance + total;
+  const pnlPct = startBalance > 0 ? (total / startBalance) * 100 : 0;
+  const wins = stats?.wins ?? 0;
+  const losses = stats?.losses ?? 0;
+  const winRate = stats?.win_rate ?? 0;
+  const avgWin = stats?.avg_win ?? 0;
+  const avgLoss = stats?.avg_loss ?? 0;
+  const rrr = avgLoss !== 0 ? avgWin / Math.abs(avgLoss) : null;
+  const pf = stats?.profit_factor ?? null;
+  const expectancy = useMemo(() => riskMetrics(trades).expectancy, [trades]);
+
+  const balanceSeries = useMemo(
+    () => balanceSeriesForPeriod(trades, startBalance, period),
+    [trades, startBalance, period],
+  );
+
+  const setupEdge = useMemo(() => setupPerformance(trades).map((s) => ({ name: s.name, pnl: s.pnl })), [trades]);
+  const emotionEdge = useMemo(() => emotionBreakdown(trades).map((e) => ({ name: e.name, pnl: e.pnl })), [trades]);
+  const sessionEdge = useMemo(() => sessionsByPnl(trades), [trades]);
 
   if (loading) {
     return (
       <View style={styles.centered}>
-        <ActivityIndicator color={colors.primary} size="large" />
+        <ActivityIndicator color={neon.green} size="large" />
       </View>
     );
   }
-
-  const total = stats?.total_pnl ?? 0;
-  const winPct = stats ? (stats.win_rate * 100).toFixed(1) : '0';
-  const pf = stats?.profit_factor ?? null;
 
   return (
     <ScrollView
       style={styles.container}
       contentContainerStyle={styles.content}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={colors.primary} />}
+      refreshControl={
+        <RefreshControl
+          refreshing={refreshing}
+          onRefresh={() => {
+            setRefreshing(true);
+            load();
+          }}
+          tintColor={neon.green}
+        />
+      }
     >
-      <LinearGradient
-        colors={[...gradients.brand]}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={styles.header}
-      >
-        <Text style={styles.headerLabel}>NET P&L</Text>
-        <Text style={styles.headerValue}>{formatPnl(total)}</Text>
-        <Text style={styles.headerSub}>
-          {stats?.total_trades ?? 0} trades · {winPct}% win · PF {pf === null ? '—' : pf.toFixed(2)}
-        </Text>
-      </LinearGradient>
+      <AccountPicker value={accountId} allowAll={false} onChange={setAccountId} />
 
-      <AccountPicker
-        value={filters.accountId}
-        onChange={(id) => setFilters((f) => ({ ...f, accountId: id }))}
-      />
-      <FilterBar value={filters} symbols={allSymbols} onChange={setFilters} />
+      <View style={styles.seg}>
+        <Pressable style={[styles.segBtn, tab === 'account' && styles.segBtnOn]} onPress={() => setTab('account')}>
+          <Text style={[styles.segText, tab === 'account' && styles.segTextOn]}>Account</Text>
+        </Pressable>
+        <Pressable style={[styles.segBtn, tab === 'trading' && styles.segBtnOn]} onPress={() => setTab('trading')}>
+          <Text style={[styles.segText, tab === 'trading' && styles.segTextOn]}>Trading</Text>
+        </Pressable>
+      </View>
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
 
-      <View style={styles.scoreCard}>
-        <ScoreGauge score={score} size={76} />
-        <View style={styles.scoreText}>
-          <Text style={styles.scoreTitle}>Score · {scoreLabel(score)}</Text>
-          <Text style={styles.scoreDesc}>Win rate, ratio gain/perte et profitabilité combinés.</Text>
-        </View>
-      </View>
-
-      <View style={styles.grid}>
-        <Metric label="Profit factor" value={pf === null ? '—' : pf.toFixed(2)} />
-        <Metric label="Trades" value={String(stats?.total_trades ?? 0)} />
-        <Metric label="Gain moyen" value={formatPnl(stats?.avg_win ?? 0)} color={colors.green} />
-        <Metric label="Perte moyenne" value={formatPnl(stats?.avg_loss ?? 0)} color={colors.red} />
-      </View>
-
-      {risk.count > 0 ? (
-        <Section title="Risque & performance">
-          <View style={styles.grid}>
-            <Metric label="Gain espéré / trade" value={formatPnl(risk.expectancy)} color={pnlColor(risk.expectancy)} />
-            <Metric label="Max drawdown" value={formatPnl(risk.maxDrawdown)} color={colors.red} />
-            <Metric label="Meilleur trade" value={formatPnl(risk.bestTrade)} color={colors.green} />
-            <Metric label="Pire trade" value={formatPnl(risk.worstTrade)} color={colors.red} />
-            <Metric label="Série de gains" value={`${risk.winStreak}`} color={colors.green} />
-            <Metric label="Série de pertes" value={`${risk.lossStreak}`} color={colors.red} />
-            <Metric label="Durée moyenne" value={formatHold(risk.avgHoldMin)} />
-          </View>
-        </Section>
-      ) : null}
-
-      <Section title="Courbe d'equity">
-        <View style={styles.chartCard}>
-          <EquityCurve values={equity} />
-        </View>
-      </Section>
-
-      <Section title="P&L par jour">
-        <View style={styles.chartCard}>
-          <PnlBars data={daily} />
-        </View>
-      </Section>
-
-      <HealthTrendCard trades={trades} />
-      <DayTimeCard trades={trades} />
-      <SetupPerfCard trades={trades} />
-      <TopSymbolsCard trades={trades} />
-
-      {durations.length > 0 ? (
-        <Section title="Performance par durée">
-          <View style={styles.chartCard}>
-            {durations.map((b) => (
-              <View key={b.label} style={styles.symbolRow}>
-                <Text style={styles.symbol}>{b.label}</Text>
-                <Text style={styles.symbolMeta}>
-                  {b.count} trades · {(b.winRate * 100).toFixed(0)}% win
-                </Text>
-                <Text style={[styles.symbolPnl, { color: pnlColor(b.pnl) }]}>{formatPnl(b.pnl)}</Text>
+      {tab === 'account' ? (
+        <>
+          <View style={[styles.card, glow(neon.green, 18, 0.25)]}>
+            <View style={styles.heroRow}>
+              <View>
+                <Text style={styles.lbl}>Balance</Text>
+                <Text style={styles.hero}>{money(equity)}</Text>
               </View>
-            ))}
-          </View>
-        </Section>
-      ) : null}
-
-      {types.length > 0 ? (
-        <Section title="Type de trades">
-          <View style={styles.chartCard}>
-            {types.map((b) => (
-              <View key={b.label} style={styles.symbolRow}>
-                <Text style={styles.symbol}>{b.label}</Text>
-                <Text style={styles.symbolMeta}>
-                  {b.count} trades · {(b.winRate * 100).toFixed(0)}% win
+              <View style={{ alignItems: 'flex-end' }}>
+                <Text style={styles.lbl}>Total P&amp;L</Text>
+                <Text style={[styles.heroPnl, glowText(total >= 0 ? neon.green : neon.red)]}>{moneySigned(total)}</Text>
+                <Text style={[styles.pct, { color: total >= 0 ? neon.green : neon.red }]}>
+                  {total >= 0 ? '▲' : '▼'} {Math.abs(pnlPct).toFixed(1)}%
                 </Text>
-                <Text style={[styles.symbolPnl, { color: pnlColor(b.pnl) }]}>{formatPnl(b.pnl)}</Text>
               </View>
-            ))}
+            </View>
+            <View style={{ marginTop: 8 }}>
+              <NeonEquityChart values={balanceSeries} period={period} onPeriod={setPeriod} />
+            </View>
           </View>
-        </Section>
-      ) : null}
 
-      <PropFirmCard accountId={filters.accountId} trades={trades} />
+          <View style={styles.row}>
+            <Kpi label="Expectancy / trade" value={moneySigned(expectancy)} color={expectancy >= 0 ? neon.green : neon.red} glowIt />
+            <Kpi label="Profit factor" value={pf === null ? '—' : pf.toFixed(2)} />
+          </View>
+
+          <PropFirmCard accountId={accountId} trades={trades} />
+        </>
+      ) : (
+        <>
+          <View style={[styles.card, glow(neon.green, 16, 0.2)]}>
+            <View style={styles.gaugeRow}>
+              <NeonGauge ratio={winRate} wins={wins} losses={losses} />
+              <View style={{ flex: 1, marginLeft: 8 }}>
+                <Text style={styles.lbl}>RRR moyen</Text>
+                <Text style={styles.rrr}>{rrr === null ? '—' : rrr.toFixed(2)}</Text>
+                <Text style={styles.note}>Le win rate seul est trompeur — toujours lu avec le RRR.</Text>
+              </View>
+            </View>
+          </View>
+
+          <View style={styles.row}>
+            <Kpi label="Avg win" value={moneySigned(avgWin)} color={neon.green} glowIt />
+            <Kpi label="Avg loss" value={moneySigned(avgLoss)} color={neon.red} glowIt />
+          </View>
+
+          <Text style={styles.sectionLbl}>Où est ton edge</Text>
+          <View style={[styles.card, { paddingVertical: 6 }]}>
+            <EdgeRow label="Setup" list={setupEdge} />
+            <EdgeRow label="Session" list={sessionEdge} />
+            <EdgeRow label="Émotion" list={emotionEdge} />
+            {setupEdge.length === 0 && emotionEdge.length === 0 && sessionEdge.length === 0 ? (
+              <Text style={[styles.note, { paddingVertical: 10 }]}>Ajoute des setups / émotions à tes trades pour révéler ton edge.</Text>
+            ) : null}
+          </View>
+        </>
+      )}
     </ScrollView>
   );
 }
 
-function formatHold(min: number | null): string {
-  if (min == null) return '—';
-  if (min < 60) return `${Math.round(min)} min`;
-  if (min < 60 * 24) return `${(min / 60).toFixed(1)} h`;
-  return `${(min / 1440).toFixed(1)} j`;
-}
-
-function Metric({ label, value, color }: { label: string; value: string; color?: string }) {
+function Kpi({ label, value, color, glowIt }: { label: string; value: string; color?: string; glowIt?: boolean }) {
   return (
-    <View style={styles.metric}>
-      <Text style={styles.metricLabel}>{label}</Text>
-      <Text style={[styles.metricValue, color ? { color } : null]}>{value}</Text>
+    <View style={styles.kpi}>
+      <Text style={styles.lbl}>{label}</Text>
+      <Text style={[styles.kpiVal, color ? { color } : null, glowIt && color ? glowText(color) : null]}>{value}</Text>
     </View>
   );
 }
 
+function EdgeRow({ label, list }: { label: string; list: { name: string; pnl: number }[] }) {
+  if (list.length === 0) return null;
+  const best = list[0];
+  const worst = list[list.length - 1];
+  const showWorst = worst.name !== best.name;
+  return (
+    <View style={styles.edge}>
+      <Text style={styles.edgeKey}>{label}</Text>
+      <View style={styles.edgeVals}>
+        <Text style={[styles.chip, { color: neon.green }]} numberOfLines={1}>
+          {best.name} {edgeAmt(best.pnl)}
+        </Text>
+        {showWorst ? <Text style={styles.dot}>·</Text> : null}
+        {showWorst ? (
+          <Text style={[styles.chip, { color: neon.red }]} numberOfLines={1}>
+            {worst.name} {edgeAmt(worst.pnl)}
+          </Text>
+        ) : null}
+      </View>
+    </View>
+  );
+}
+
+// --- helpers ----------------------------------------------------------------
+
+function glowText(color: string) {
+  return { textShadowColor: color, textShadowRadius: 12, textShadowOffset: { width: 0, height: 0 } };
+}
+
+function edgeAmt(v: number): string {
+  const s = v > 0 ? '+' : v < 0 ? '−' : '';
+  const a = Math.abs(v);
+  const str = a >= 1000 ? `${(a / 1000).toFixed(a >= 10000 ? 0 : 1)}k` : `${Math.round(a)}`;
+  return `${s}$${str}`;
+}
+
+function tradeTs(t: Trade): number | null {
+  const raw = t.close_time ?? t.open_time ?? t.created_at;
+  if (!raw) return null;
+  const d = new Date(raw.replace(' ', 'T'));
+  return isNaN(d.getTime()) ? null : d.getTime();
+}
+
+const PERIOD_DAYS: Record<Period, number> = { '1D': 1, '1M': 30, '3M': 90, '6M': 180, '1Y': 365, ALL: Infinity };
+
+/** Balance path (start balance + cumulative P&L), sliced to the chosen period. */
+function balanceSeriesForPeriod(trades: Trade[], start: number, period: Period): number[] {
+  const pts = trades
+    .filter((t) => t.pnl !== null && t.pnl !== undefined)
+    .map((t) => ({ ts: tradeTs(t), pnl: t.pnl as number }))
+    .filter((p): p is { ts: number; pnl: number } => p.ts !== null)
+    .sort((a, b) => a.ts - b.ts);
+  if (pts.length === 0) return [];
+
+  let cum = start;
+  const path = pts.map((p) => {
+    cum += p.pnl;
+    return { ts: p.ts, bal: cum };
+  });
+
+  const days = PERIOD_DAYS[period];
+  if (!isFinite(days)) return [start, ...path.map((p) => p.bal)];
+
+  const cutoff = Date.now() - days * 86400000;
+  let baseline = start;
+  const win: number[] = [];
+  for (const p of path) {
+    if (p.ts < cutoff) baseline = p.bal;
+    else win.push(p.bal);
+  }
+  if (win.length === 0) return [];
+  return [baseline, ...win];
+}
+
+const SESSIONS: { name: string; lo: number; hi: number }[] = [
+  { name: 'Asie', lo: 0, hi: 8 },
+  { name: 'Londres', lo: 8, hi: 14 },
+  { name: 'New York', lo: 14, hi: 22 },
+  { name: 'Hors session', lo: 22, hi: 24 },
+];
+
+/** Cumulative P&L per trading session, best first. */
+function sessionsByPnl(trades: Trade[]): { name: string; pnl: number }[] {
+  const sums = new Map<string, number>();
+  for (const t of trades) {
+    if (t.pnl === null || t.pnl === undefined) continue;
+    const ts = tradeTs(t);
+    if (ts === null) continue;
+    const h = new Date(ts).getHours();
+    const s = SESSIONS.find((x) => h >= x.lo && h < x.hi) ?? SESSIONS[3];
+    sums.set(s.name, (sums.get(s.name) ?? 0) + (t.pnl as number));
+  }
+  return [...sums.entries()].map(([name, pnl]) => ({ name, pnl })).sort((a, b) => b.pnl - a.pnl);
+}
+
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.bg },
-  content: { paddingBottom: spacing.lg },
-  centered: { flex: 1, justifyContent: 'center', backgroundColor: colors.bg },
-  header: {
-    paddingTop: spacing.lg,
-    paddingBottom: spacing.lg,
-    paddingHorizontal: spacing.md,
-    borderBottomLeftRadius: radius.xl,
-    borderBottomRightRadius: radius.xl,
+  container: { flex: 1, backgroundColor: neon.bg },
+  content: { paddingBottom: 32 },
+  centered: { flex: 1, justifyContent: 'center', backgroundColor: neon.bg },
+  error: { color: neon.red, paddingHorizontal: 16, paddingTop: 8 },
+  seg: {
+    flexDirection: 'row',
+    gap: 6,
+    backgroundColor: neon.panel,
+    borderColor: neon.border,
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 5,
+    marginHorizontal: 16,
+    marginTop: 10,
   },
-  headerLabel: { color: '#E9E4FF', fontSize: 11, letterSpacing: 0.5 },
-  headerValue: { color: '#FFFFFF', fontSize: 32, fontWeight: '700', marginTop: 2 },
-  headerSub: { color: '#E9E4FF', fontSize: 12, marginTop: 4 },
-  error: { color: colors.red, paddingHorizontal: spacing.md, paddingTop: spacing.sm },
-  scoreCard: {
+  segBtn: { flex: 1, alignItems: 'center', paddingVertical: 10, borderRadius: 10 },
+  segBtnOn: { backgroundColor: 'rgba(0,255,163,0.14)', borderWidth: 1, borderColor: 'rgba(0,255,163,0.4)' },
+  segText: { color: neon.muted, fontSize: 13, fontWeight: '600' },
+  segTextOn: { color: neon.green },
+  card: {
+    backgroundColor: neon.panel,
+    borderColor: neon.border,
+    borderWidth: 1,
+    borderRadius: 18,
+    padding: 16,
+    marginHorizontal: 16,
+    marginTop: 12,
+  },
+  heroRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
+  lbl: { color: neon.muted, fontSize: 11, letterSpacing: 0.4, textTransform: 'uppercase' },
+  hero: { color: neon.text, fontSize: 30, fontWeight: '700', marginTop: 2 },
+  heroPnl: { color: neon.green, fontSize: 20, fontWeight: '700', marginTop: 2 },
+  pct: { fontSize: 12, marginTop: 2, fontWeight: '600' },
+  row: { flexDirection: 'row', gap: 12, marginHorizontal: 16, marginTop: 12 },
+  kpi: {
+    flex: 1,
+    backgroundColor: neon.panel,
+    borderColor: neon.border,
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 14,
+  },
+  kpiVal: { color: neon.text, fontSize: 18, fontWeight: '700', marginTop: 4 },
+  gaugeRow: { flexDirection: 'row', alignItems: 'center' },
+  rrr: { color: neon.text, fontSize: 26, fontWeight: '700', marginTop: 2 },
+  note: { color: neon.muted, fontSize: 11, marginTop: 5, lineHeight: 16 },
+  sectionLbl: { color: neon.muted, fontSize: 11, letterSpacing: 0.5, textTransform: 'uppercase', marginHorizontal: 18, marginTop: 18, marginBottom: 2 },
+  edge: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: spacing.md,
-    backgroundColor: colors.card,
-    borderColor: colors.border,
-    borderWidth: 1,
-    borderRadius: radius.lg,
-    padding: spacing.md,
-    margin: spacing.md,
-  },
-  scoreText: { flex: 1 },
-  scoreTitle: { color: colors.text, fontSize: 14, fontWeight: '600' },
-  scoreDesc: { color: colors.textMuted, fontSize: 12, marginTop: 3, lineHeight: 17 },
-  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, paddingHorizontal: spacing.md },
-  metric: {
-    backgroundColor: colors.card,
-    borderColor: colors.border,
-    borderWidth: 1,
-    borderRadius: radius.md,
-    padding: spacing.md,
-    width: '48%',
-  },
-  metricLabel: { color: colors.textMuted, fontSize: 12 },
-  metricValue: { color: colors.text, fontSize: 20, fontWeight: '600', marginTop: 4 },
-  section: { color: colors.text, fontSize: 16, fontWeight: '600', marginTop: spacing.md, marginBottom: spacing.sm, marginHorizontal: spacing.md },
-  chartCard: { backgroundColor: colors.card, borderColor: colors.border, borderWidth: 1, borderRadius: radius.lg, padding: spacing.md, marginHorizontal: spacing.md },
-  symbolRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: spacing.sm,
-    borderBottomColor: colors.border,
+    justifyContent: 'space-between',
+    paddingVertical: 11,
+    borderBottomColor: neon.border,
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
-  symbol: { color: colors.text, fontSize: 15, fontWeight: '600', width: 90 },
-  symbolMeta: { color: colors.textMuted, fontSize: 13, flex: 1 },
-  symbolPnl: { fontSize: 15, fontWeight: '700' },
+  edgeKey: { color: neon.text, fontSize: 14, fontWeight: '500' },
+  edgeVals: { flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 1, marginLeft: 10 },
+  chip: { fontSize: 12, fontWeight: '600', flexShrink: 1 },
+  dot: { color: neon.muted, fontSize: 12 },
 });
