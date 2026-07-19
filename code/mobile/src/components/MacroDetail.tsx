@@ -36,8 +36,9 @@ export function MacroDetail({
 
   return (
     <Modal visible transparent animationType="slide" onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose}>
-        <Pressable style={styles.sheet} onPress={() => {}}>
+      <View style={styles.root}>
+        <Pressable style={styles.backdropFill} onPress={onClose} />
+        <View style={styles.sheet}>
           <View style={styles.handle} />
           <Pressable style={styles.closeX} onPress={onClose} hitSlop={10}>
             <Text style={styles.closeXText}>✕</Text>
@@ -125,8 +126,8 @@ export function MacroDetail({
               <Text style={styles.closeText}>Fermer</Text>
             </Pressable>
           </ScrollView>
-        </Pressable>
-      </Pressable>
+        </View>
+      </View>
     </Modal>
   );
 }
@@ -138,7 +139,8 @@ function formatDate(iso: string): string {
 }
 
 const styles = StyleSheet.create({
-  backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+  root: { flex: 1, justifyContent: 'flex-end' },
+  backdropFill: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.5)' },
   sheet: { backgroundColor: colors.surface, borderTopLeftRadius: radius.xl, borderTopRightRadius: radius.xl, padding: spacing.md, paddingBottom: spacing.lg, maxHeight: '88%' },
   handle: { alignSelf: 'center', width: 40, height: 4, borderRadius: 2, backgroundColor: colors.border, marginBottom: spacing.md },
   closeX: { position: 'absolute', right: spacing.sm, top: spacing.sm, zIndex: 10, width: 32, height: 32, borderRadius: 16, backgroundColor: colors.card2, alignItems: 'center', justifyContent: 'center' },
