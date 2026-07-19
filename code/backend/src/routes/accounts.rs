@@ -168,6 +168,26 @@ pub async fn upsert_rules(
     Ok(Json(rule))
 }
 
+/// `DELETE /accounts/:id` — remove the account and, in cascade, its trades and
+/// prop rules. 404 if it doesn't exist.
+///
+/// The delete is a single statement: the schema's `ON DELETE CASCADE` (with the
+/// `foreign_keys` pragma on for every pooled connection) drops the account's
+/// trades, prop_rules and sessions atomically — no explicit transaction needed.
+pub async fn delete_account(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> AppResult<StatusCode> {
+    let res = sqlx::query("DELETE FROM accounts WHERE id = ?")
+        .bind(&id)
+        .execute(&state.pool)
+        .await?;
+    if res.rows_affected() == 0 {
+        return Err(AppError::NotFound);
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn fetch_account(pool: &SqlitePool, id: &str) -> AppResult<Option<Account>> {
     let account = sqlx::query_as::<_, Account>("SELECT * FROM accounts WHERE id = ?")
         .bind(id)

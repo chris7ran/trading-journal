@@ -47,13 +47,18 @@ pub fn build_router(state: AppState) -> Router {
         .route("/trades/import/csv", post(import::import_csv))
         .route(
             "/trades/:id",
-            get(trades::get_trade).put(trades::update_trade),
+            get(trades::get_trade)
+                .put(trades::update_trade)
+                .delete(trades::delete_trade),
         )
         .route(
             "/accounts",
             get(accounts::list_accounts).post(accounts::create_account),
         )
-        .route("/accounts/:id", put(accounts::update_account))
+        .route(
+            "/accounts/:id",
+            put(accounts::update_account).delete(accounts::delete_account),
+        )
         .route(
             "/accounts/:id/rules",
             get(accounts::get_rules).put(accounts::upsert_rules),

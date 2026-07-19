@@ -1,6 +1,7 @@
 //! CRUD handlers for `/trades`.
 
 use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
 use axum::Json;
 use sqlx::{QueryBuilder, Sqlite, SqlitePool};
 use uuid::Uuid;
@@ -8,8 +9,6 @@ use uuid::Uuid;
 use crate::error::{AppError, AppResult};
 use crate::models::{NewTrade, Trade, TradeFilters, UpdateTrade};
 use crate::state::AppState;
-
-const DEFAULT_ACCOUNT: &str = "default";
 
 /// `GET /trades` — list trades with optional filters, newest first.
 pub async fn list_trades(
@@ -63,15 +62,23 @@ pub async fn get_trade(
 pub async fn create_trade(
     State(state): State<AppState>,
     Json(input): Json<NewTrade>,
-) -> AppResult<(axum::http::StatusCode, Json<Trade>)> {
+) -> AppResult<(StatusCode, Json<Trade>)> {
     if input.symbol.trim().is_empty() {
         return Err(AppError::BadRequest("symbol is required".into()));
     }
 
     let id = Uuid::new_v4().to_string();
-    let account_id = input
-        .account_id
-        .unwrap_or_else(|| DEFAULT_ACCOUNT.to_string());
+    // No explicit account: land in the most recent one (there's no longer a
+    // seeded "default" account). Erroring here beats a confusing FK failure.
+    let account_id = match input.account_id {
+        Some(id) => id,
+        None => sqlx::query_scalar::<_, String>(
+            "SELECT id FROM accounts ORDER BY created_at DESC LIMIT 1",
+        )
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or_else(|| AppError::BadRequest("aucun compte : créez un compte d'abord".into()))?,
+    };
 
     let result = sqlx::query(
         r#"
@@ -118,7 +125,22 @@ pub async fn create_trade(
         .await?
         .ok_or_else(|| AppError::Other(anyhow::anyhow!("trade vanished after insert")))?;
 
-    Ok((axum::http::StatusCode::CREATED, Json(trade)))
+    Ok((StatusCode::CREATED, Json(trade)))
+}
+
+/// `DELETE /trades/:id` — remove a trade. 404 if it doesn't exist.
+pub async fn delete_trade(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> AppResult<StatusCode> {
+    let res = sqlx::query("DELETE FROM trades WHERE id = ?")
+        .bind(&id)
+        .execute(&state.pool)
+        .await?;
+    if res.rows_affected() == 0 {
+        return Err(AppError::NotFound);
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// `PUT /trades/:id` — partial update (only provided fields change).
