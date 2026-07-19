@@ -79,6 +79,21 @@ async fn login(app: &axum::Router) -> String {
     body_json(res).await["token"].as_str().unwrap().to_string()
 }
 
+// There's no seeded default account, so trade creation needs one to exist.
+// Returns the new account id.
+async fn seed_account(app: &axum::Router, token: &str) -> String {
+    let req = Request::builder()
+        .method("POST")
+        .uri("/accounts")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::from(json!({ "name": "Test" }).to_string()))
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::CREATED);
+    body_json(res).await["id"].as_str().unwrap().to_string()
+}
+
 #[tokio::test]
 async fn login_rejects_wrong_password() {
     let app = test_app().await;
@@ -115,6 +130,7 @@ async fn trades_require_auth() {
 async fn create_then_list_and_get_trade() {
     let app = test_app().await;
     let token = login(&app).await;
+    seed_account(&app, &token).await;
 
     // Create
     let create = Request::builder()
@@ -165,6 +181,7 @@ async fn create_then_list_and_get_trade() {
 async fn duplicate_ticket_conflicts() {
     let app = test_app().await;
     let token = login(&app).await;
+    seed_account(&app, &token).await;
 
     let make = || {
         Request::builder()
@@ -189,7 +206,10 @@ async fn import_csv_dedupes_on_ticket() {
     let app = test_app().await;
     let token = login(&app).await;
 
+    // Account header lets the import auto-create the target (no default exists).
     let csv = "\
+Nom:,,,test-account
+Compte:,,,\"900001 (USD, Test)\"
 Ticket,Symbol,Type,Volume,Open Time,Open Price,Close Time,Close Price,Commission,Swap,Profit
 501,EURUSD,Buy,0.10,2026.06.20 09:30:00,1.0850,2026.06.20 11:00:00,1.0900,-0.50,0.0,50.00
 502,GER40,Sell,1.00,2026.06.20 10:00:00,18250.0,2026.06.20 10:45:00,18200.0,-1.00,0.0,500.00";
@@ -282,6 +302,130 @@ async fn list_trades(app: &axum::Router, token: &str) -> Vec<Value> {
     body_json(res).await.as_array().unwrap().clone()
 }
 
+async fn list_accounts(app: &axum::Router, token: &str) -> Vec<Value> {
+    let req = Request::builder()
+        .uri("/accounts")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    body_json(res).await.as_array().unwrap().clone()
+}
+
+#[tokio::test]
+async fn no_seeded_default_account() {
+    // The 0004 migration removes the seeded "default" account on a fresh DB.
+    let app = test_app().await;
+    let token = login(&app).await;
+    let accounts = list_accounts(&app, &token).await;
+    assert!(
+        accounts.is_empty(),
+        "expected no accounts, got {accounts:?}"
+    );
+}
+
+#[tokio::test]
+async fn delete_trade_then_404() {
+    let app = test_app().await;
+    let token = login(&app).await;
+    seed_account(&app, &token).await;
+
+    let create = Request::builder()
+        .method("POST")
+        .uri("/trades")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::from(
+            json!({ "symbol": "GER40", "pnl": 10.0 }).to_string(),
+        ))
+        .unwrap();
+    let res = app.clone().oneshot(create).await.unwrap();
+    assert_eq!(res.status(), StatusCode::CREATED);
+    let id = body_json(res).await["id"].as_str().unwrap().to_string();
+
+    let del = || {
+        Request::builder()
+            .method("DELETE")
+            .uri(format!("/trades/{id}"))
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap()
+    };
+    // First delete succeeds, the trade is gone, a second delete 404s.
+    assert_eq!(
+        app.clone().oneshot(del()).await.unwrap().status(),
+        StatusCode::NO_CONTENT
+    );
+    assert!(list_trades(&app, &token).await.is_empty());
+    assert_eq!(
+        app.clone().oneshot(del()).await.unwrap().status(),
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn delete_account_cascades_trades_and_rules() {
+    let app = test_app().await;
+    let token = login(&app).await;
+    let account_id = seed_account(&app, &token).await;
+
+    // A trade in the account...
+    let create = Request::builder()
+        .method("POST")
+        .uri("/trades")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::from(
+            json!({ "symbol": "GER40", "pnl": 10.0, "account_id": account_id }).to_string(),
+        ))
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(create).await.unwrap().status(),
+        StatusCode::CREATED
+    );
+    // ...and prop rules for it.
+    let put_rules = Request::builder()
+        .method("PUT")
+        .uri(format!("/accounts/{account_id}/rules"))
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::from(
+            json!({ "daily_drawdown_max": 0.05 }).to_string(),
+        ))
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(put_rules).await.unwrap().status(),
+        StatusCode::OK
+    );
+
+    // Delete the account: cascade removes its trades and rules.
+    let del = Request::builder()
+        .method("DELETE")
+        .uri(format!("/accounts/{account_id}"))
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(del).await.unwrap().status(),
+        StatusCode::NO_CONTENT
+    );
+
+    assert!(list_accounts(&app, &token).await.is_empty());
+    assert!(list_trades(&app, &token).await.is_empty()); // cascaded
+
+    // Rules are gone too (404).
+    let get_rules = Request::builder()
+        .uri(format!("/accounts/{account_id}/rules"))
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(get_rules).await.unwrap().status(),
+        StatusCode::NOT_FOUND
+    );
+}
+
 #[tokio::test]
 async fn accounts_create_list_and_rules() {
     let app = test_app().await;
@@ -303,7 +447,7 @@ async fn accounts_create_list_and_rules() {
     let account_id = account["id"].as_str().unwrap().to_string();
     assert_eq!(account["broker"], "FusionMarkets"); // default applied
 
-    // List: seeded "default" account + the new one.
+    // List: just the one we created (no seeded default account anymore).
     let list = Request::builder()
         .uri("/accounts")
         .header("authorization", format!("Bearer {token}"))
@@ -311,7 +455,7 @@ async fn accounts_create_list_and_rules() {
         .unwrap();
     let res = app.clone().oneshot(list).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
-    assert_eq!(body_json(res).await.as_array().unwrap().len(), 2);
+    assert_eq!(body_json(res).await.as_array().unwrap().len(), 1);
 
     // No rules yet -> 404.
     let get_rules = || {
@@ -350,6 +494,7 @@ async fn accounts_create_list_and_rules() {
 async fn trade_stats_aggregates_correctly() {
     let app = test_app().await;
     let token = login(&app).await;
+    seed_account(&app, &token).await;
 
     let create_trade = |symbol: &'static str, pnl: f64| {
         Request::builder()
@@ -396,6 +541,7 @@ async fn trade_stats_handles_wins_only() {
     // (SQLite would otherwise return an INTEGER 0). CAST(... AS REAL) fixes it.
     let app = test_app().await;
     let token = login(&app).await;
+    seed_account(&app, &token).await;
 
     let create = Request::builder()
         .method("POST")
