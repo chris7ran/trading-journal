@@ -39,7 +39,10 @@ export function MacroDetail({
       <Pressable style={styles.backdrop} onPress={onClose}>
         <Pressable style={styles.sheet} onPress={() => {}}>
           <View style={styles.handle} />
-          <ScrollView showsVerticalScrollIndicator={false}>
+          <Pressable style={styles.closeX} onPress={onClose} hitSlop={10}>
+            <Text style={styles.closeXText}>✕</Text>
+          </Pressable>
+          <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: spacing.md }}>
             <Text style={styles.region}>{ind.region}</Text>
             <Text style={styles.label}>{ind.label}</Text>
 
@@ -138,6 +141,8 @@ const styles = StyleSheet.create({
   backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
   sheet: { backgroundColor: colors.surface, borderTopLeftRadius: radius.xl, borderTopRightRadius: radius.xl, padding: spacing.md, paddingBottom: spacing.lg, maxHeight: '88%' },
   handle: { alignSelf: 'center', width: 40, height: 4, borderRadius: 2, backgroundColor: colors.border, marginBottom: spacing.md },
+  closeX: { position: 'absolute', right: spacing.sm, top: spacing.sm, zIndex: 10, width: 32, height: 32, borderRadius: 16, backgroundColor: colors.card2, alignItems: 'center', justifyContent: 'center' },
+  closeXText: { color: colors.text, fontSize: 15, fontWeight: '700' },
   region: { color: colors.textMuted, fontSize: 12 },
   label: { color: colors.text, fontSize: 18, fontWeight: '700', marginTop: 2 },
   headRow: { flexDirection: 'row', alignItems: 'baseline', gap: spacing.md, marginTop: spacing.sm },

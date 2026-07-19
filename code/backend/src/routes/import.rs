@@ -16,8 +16,6 @@ use crate::csv_import::mt5::{self, ParseResult};
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
-const DEFAULT_ACCOUNT: &str = "default";
-
 #[derive(Debug, Deserialize)]
 pub struct ImportQuery {
     pub account_id: Option<String>,
@@ -130,7 +128,7 @@ pub async fn import_csv(
 
 /// Decide which account the import targets, returning `(id, name)`.
 /// Priority: explicit `?account_id` → the report's `Compte:` number (created on
-/// demand) → the seeded default account.
+/// demand). With neither, we error rather than guess — there's no default.
 async fn resolve_account(
     state: &AppState,
     query: &ImportQuery,
@@ -173,13 +171,9 @@ async fn resolve_account(
         return Ok((id, number.clone()));
     }
 
-    // No hint at all: fall back to the seeded default account.
-    let row: Option<(String, String)> =
-        sqlx::query_as("SELECT id, name FROM accounts WHERE id = ?")
-            .bind(DEFAULT_ACCOUNT)
-            .fetch_optional(&state.pool)
-            .await?;
-    row.ok_or_else(|| {
-        AppError::BadRequest("no account_id given and no default account exists".into())
-    })
+    Err(AppError::BadRequest(
+        "impossible de déterminer le compte : aucun account_id fourni et aucun numéro de compte \
+         dans le report"
+            .into(),
+    ))
 }
