@@ -44,6 +44,10 @@ use crate::models::NewTrade;
 pub struct ParseResult {
     pub trades: Vec<NewTrade>,
     pub warnings: Vec<String>,
+    /// MT5 login number from the report's `Compte:` header (e.g. "314299306").
+    pub account_number: Option<String>,
+    /// Owner label from the report's `Nom:` header.
+    pub account_name: Option<String>,
 }
 
 /// Section titles that mark the end of the Positions block (lowercased).
@@ -60,7 +64,7 @@ const SECTION_KEYWORDS: &[&str] = &[
 ];
 
 /// Parse an MT5 history report from raw **CSV** text.
-pub fn parse(csv_text: &str, account_id: &str) -> Result<ParseResult, String> {
+pub fn parse(csv_text: &str) -> Result<ParseResult, String> {
     let delimiter = sniff_delimiter(csv_text);
 
     let mut reader = ReaderBuilder::new()
@@ -78,12 +82,12 @@ pub fn parse(csv_text: &str, account_id: &str) -> Result<ParseResult, String> {
             Err(_) => continue, // skip malformed lines rather than abort
         }
     }
-    parse_rows(rows, account_id)
+    parse_rows(rows)
 }
 
 /// Parse an MT5 history report directly from an **.xlsx** file (the format MT5
 /// exports). Avoids the manual XLSX -> CSV conversion (and its locale pitfalls).
-pub fn parse_xlsx(bytes: &[u8], account_id: &str) -> Result<ParseResult, String> {
+pub fn parse_xlsx(bytes: &[u8]) -> Result<ParseResult, String> {
     // MT5 writes the XLSX's internal XML as UTF-16, which calamine/quick-xml
     // cannot read ("Unexpected end of xml"). Re-pack the archive with its XML
     // entries transcoded to UTF-8 before handing it to calamine.
@@ -104,12 +108,12 @@ pub fn parse_xlsx(bytes: &[u8], account_id: &str) -> Result<ParseResult, String>
         .map(|row| row.iter().map(cell_to_string).collect())
         .collect();
 
-    parse_rows(rows, account_id)
+    parse_rows(rows)
 }
 
 /// Shared parsing core: takes a grid of string cells (from CSV or XLSX) and
 /// extracts the Positions section into trades.
-fn parse_rows(rows: Vec<Vec<String>>, account_id: &str) -> Result<ParseResult, String> {
+fn parse_rows(rows: Vec<Vec<String>>) -> Result<ParseResult, String> {
     if rows.is_empty() {
         return Err("fichier vide".to_string());
     }
@@ -124,6 +128,9 @@ fn parse_rows(rows: Vec<Vec<String>>, account_id: &str) -> Result<ParseResult, S
     }
 
     let mut result = ParseResult::default();
+    let (account_number, account_name) = extract_account_meta(&rows, header_idx);
+    result.account_number = account_number;
+    result.account_name = account_name;
 
     for raw in rows.iter().skip(header_idx + 1) {
         // Stop at a blank row or the next section.
@@ -147,8 +154,15 @@ fn parse_rows(rows: Vec<Vec<String>>, account_id: &str) -> Result<ParseResult, S
             None => continue, // not a trade row (summary/blank)
         };
 
+        // Net P&L = gross profit + commission + swap (both usually costs).
+        let profit = get(cols.profit).and_then(|v| parse_number(&v));
+        let commission = get(cols.commission).and_then(|v| parse_number(&v));
+        let swap = get(cols.swap).and_then(|v| parse_number(&v));
+        let pnl = profit.map(|p| p + commission.unwrap_or(0.0) + swap.unwrap_or(0.0));
+
         let trade = NewTrade {
-            account_id: Some(account_id.to_string()),
+            // Resolved by the import route; the report itself has no local id.
+            account_id: None,
             symbol,
             direction: get(cols.type_).map(|t| normalize_direction(&t)),
             open_time: get(cols.open_time).map(normalize_datetime),
@@ -156,10 +170,10 @@ fn parse_rows(rows: Vec<Vec<String>>, account_id: &str) -> Result<ParseResult, S
             open_price: get(cols.open_price).and_then(|v| parse_number(&v)),
             close_price: get(cols.close_price).and_then(|v| parse_number(&v)),
             lot_size: get(cols.volume).and_then(|v| parse_number(&v)),
-            pnl: get(cols.profit).and_then(|v| parse_number(&v)),
+            pnl,
             pnl_pct: None,
-            commission: get(cols.commission).and_then(|v| parse_number(&v)),
-            swap: get(cols.swap).and_then(|v| parse_number(&v)),
+            commission,
+            swap,
             setup_tag: None,
             emotion_tag: None,
             notes: None,
@@ -212,6 +226,54 @@ fn locate_positions_header(rows: &[Vec<String>]) -> Option<usize> {
     }
 
     None
+}
+
+/// Extract the account number and owner name from the report's header rows
+/// (everything before the Positions block). Real shape:
+///   `Nom:,,,tran_christophe-...`
+///   `Compte:,,,"314299306 (USD, GoatFunded-Server, real, Hedge)"`
+/// The value is the first non-empty cell after the label; `account_number` is
+/// the leading digit run of the `Compte:` cell.
+fn extract_account_meta(
+    rows: &[Vec<String>],
+    header_idx: usize,
+) -> (Option<String>, Option<String>) {
+    let mut account_number = None;
+    let mut account_name = None;
+
+    for row in rows.iter().take(header_idx) {
+        let label = row
+            .first()
+            .map(|s| s.trim().trim_end_matches(':').to_lowercase())
+            .unwrap_or_default();
+        let value = row
+            .iter()
+            .skip(1)
+            .map(|s| s.trim())
+            .find(|s| !s.is_empty())
+            .map(|s| s.to_string());
+
+        match label.as_str() {
+            "nom" | "name" => account_name = value,
+            "compte" | "account" => {
+                account_number = value.as_deref().and_then(leading_digits);
+            }
+            _ => {}
+        }
+    }
+
+    (account_number, account_name)
+}
+
+/// The leading run of ASCII digits, or `None` if the string doesn't start with
+/// one. `"314299306 (USD, ...)"` -> `"314299306"`.
+fn leading_digits(s: &str) -> Option<String> {
+    let digits: String = s
+        .trim()
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    (!digits.is_empty()).then_some(digits)
 }
 
 /// Resolved column indices for the fields we care about.
@@ -434,8 +496,8 @@ mod tests {
     // the next section to verify we stop correctly.
     const REAL_FR: &str = "\
 Rapport d'historique de trading
-Nom:,,,trader-[Live_Account]_INSTANT_PRO
-Compte:,,,\"XXXXXXXXX (USD, GoatFunded-Server, real, Hedge)\"
+Nom:,,,tran_christophe-[Live_Account]_INSTANT_PRO
+Compte:,,,\"314299306 (USD, GoatFunded-Server, real, Hedge)\"
 Courtier:,,,Goat Funded Ltd.
 Date:,,,2026.06.28 21:18
 Positions
@@ -449,9 +511,16 @@ Heure d'ouverture,Ordre,Symbole,Type,Volume,Prix,S / L,T / P,Heure,État,,Commen
 
     #[test]
     fn parses_real_french_report_positions_only() {
-        let res = parse(REAL_FR, "acct-1").expect("parse ok");
+        let res = parse(REAL_FR).expect("parse ok");
         // 3 positions; the Ordres section must NOT be parsed.
         assert_eq!(res.trades.len(), 3);
+
+        // Account metadata is lifted from the header rows.
+        assert_eq!(res.account_number.as_deref(), Some("314299306"));
+        assert_eq!(
+            res.account_name.as_deref(),
+            Some("tran_christophe-[Live_Account]_INSTANT_PRO")
+        );
 
         let t0 = &res.trades[0];
         assert_eq!(t0.symbol, "US30.x");
@@ -462,11 +531,14 @@ Heure d'ouverture,Ordre,Symbole,Type,Volume,Prix,S / L,T / P,Heure,État,,Commen
         assert_eq!(t0.open_price, Some(48380.15));
         assert_eq!(t0.close_price, Some(48445.0));
         assert_eq!(t0.lot_size, Some(2.0));
-        assert_eq!(t0.pnl, Some(128.9));
+        // Net P&L = profit 128.9 + commission 0.0 + swap -8.06 = 120.84.
+        assert_eq!(t0.pnl, Some(120.84));
+        assert_eq!(t0.commission, Some(0.0));
         assert_eq!(t0.swap, Some(-8.06));
-        assert_eq!(t0.account_id.as_deref(), Some("acct-1"));
+        assert_eq!(t0.account_id, None); // resolved later by the import route
 
         assert_eq!(res.trades[1].direction.as_deref(), Some("SHORT")); // sell
+        assert_eq!(res.trades[1].pnl, Some(545.0)); // no fees
         assert_eq!(res.trades[2].symbol, "GER40.x");
     }
 
@@ -477,11 +549,12 @@ Heure d'ouverture,Ordre,Symbole,Type,Volume,Prix,S / L,T / P,Heure,État,,Commen
 Positions
 Heure;Position;Symbole;Type;Volume;Prix;S / L;T / P;Heure;Prix;Commission;Echange;Profit
 2025.12.23 12:27:24;42047402;US30.x;buy;2;48380,15;48108;48639;2025.12.24 16:34:47;48445;0,0;-8,06;128,9";
-        let res = parse(csv, "acct-1").expect("parse ok");
+        let res = parse(csv).expect("parse ok");
         assert_eq!(res.trades.len(), 1);
         let t = &res.trades[0];
         assert_eq!(t.open_price, Some(48380.15));
-        assert_eq!(t.pnl, Some(128.9));
+        // Net P&L = 128.9 + 0.0 + (-8.06) = 120.84.
+        assert_eq!(t.pnl, Some(120.84));
         assert_eq!(t.swap, Some(-8.06));
     }
 
@@ -491,16 +564,18 @@ Heure;Position;Symbole;Type;Volume;Prix;S / L;T / P;Heure;Prix;Commission;Echang
         let csv = "\
 Time,Position,Symbol,Type,Volume,Price,S/L,T/P,Time,Price,Commission,Swap,Profit
 2026.06.20 09:30:00,123,EURUSD,Buy,0.10,1.0850,0,0,2026.06.20 11:00:00,1.0900,-0.5,0,50.0";
-        let res = parse(csv, "acct-1").expect("parse ok");
+        let res = parse(csv).expect("parse ok");
         assert_eq!(res.trades.len(), 1);
         assert_eq!(res.trades[0].close_price, Some(1.0900));
         assert_eq!(res.trades[0].direction.as_deref(), Some("LONG"));
+        // Net P&L = 50.0 + (-0.5) + 0 = 49.5.
+        assert_eq!(res.trades[0].pnl, Some(49.5));
     }
 
     #[test]
     fn missing_symbol_column_errors() {
         let csv = "Ticket,Type,Volume\n1,Buy,0.1";
-        assert!(parse(csv, "acct-1").is_err());
+        assert!(parse(csv).is_err());
     }
 
     #[test]
