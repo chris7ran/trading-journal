@@ -4,6 +4,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -59,6 +60,33 @@ export function AccountPicker({
         : 'Choisir un compte'
       : accounts.find((a) => a.id === value)?.name ?? 'Compte';
 
+  function confirmDelete(account: Account) {
+    Alert.alert(
+      'Supprimer le compte',
+      `Supprimer « ${account.name} » et tous ses trades ? Action définitive.`,
+      [
+        { text: 'Annuler', style: 'cancel' },
+        {
+          text: 'Supprimer',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await api.deleteAccount(account.id);
+              // If the active account was deleted, switch away from it.
+              if (value === account.id) {
+                const remaining = accounts.filter((a) => a.id !== account.id);
+                onChange(allowAll ? null : remaining[0]?.id ?? null);
+              }
+              await load();
+            } catch (e) {
+              setError(e instanceof Error ? e.message : 'Échec de suppression.');
+            }
+          },
+        },
+      ],
+    );
+  }
+
   async function onCreate() {
     if (!name.trim()) {
       setError('Nom requis.');
@@ -106,6 +134,7 @@ export function AccountPicker({
                 detail={a.balance != null ? `${Math.round(a.balance).toLocaleString('fr-FR')} ${a.currency}` : a.broker}
                 selected={value === a.id}
                 onPress={() => { onChange(a.id); setOpen(false); }}
+                onDelete={() => confirmDelete(a)}
               />
             ))}
 
@@ -132,7 +161,7 @@ export function AccountPicker({
   );
 }
 
-function Row({ label, detail, selected, onPress }: { label: string; detail?: string | null; selected: boolean; onPress: () => void }) {
+function Row({ label, detail, selected, onPress, onDelete }: { label: string; detail?: string | null; selected: boolean; onPress: () => void; onDelete?: () => void }) {
   return (
     <Pressable style={styles.row} onPress={onPress}>
       <View style={{ flex: 1 }}>
@@ -140,6 +169,11 @@ function Row({ label, detail, selected, onPress }: { label: string; detail?: str
         {detail ? <Text style={styles.rowDetail}>{detail}</Text> : null}
       </View>
       {selected ? <Ionicons name="checkmark" size={18} color={colors.primary} /> : null}
+      {onDelete ? (
+        <Pressable onPress={onDelete} hitSlop={10} style={styles.trash}>
+          <Ionicons name="trash-outline" size={18} color={colors.red} />
+        </Pressable>
+      ) : null}
     </Pressable>
   );
 }
@@ -178,6 +212,7 @@ const styles = StyleSheet.create({
   },
   rowLabel: { color: colors.text, fontSize: 15, fontWeight: '500' },
   rowDetail: { color: colors.textMuted, fontSize: 12, marginTop: 2 },
+  trash: { paddingLeft: spacing.md },
   addRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingVertical: spacing.md },
   addText: { color: colors.primary, fontSize: 15, fontWeight: '600' },
   form: { marginTop: spacing.sm, gap: spacing.sm },

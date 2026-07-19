@@ -1,13 +1,47 @@
 // Read-only trade detail. Editing (notes, tags) comes in a later sprint.
 
-import React from 'react';
-import { Image, ScrollView, StyleSheet, Text, View } from 'react-native';
+import React, { useState } from 'react';
+import { ActivityIndicator, Alert, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
+import { ApiError } from '../api/client';
 import type { Trade } from '../api/types';
+import { useApi } from '../hooks/useApi';
+import { useAuth } from '../auth/AuthContext';
 import { colors, formatPnl, pnlColor, spacing } from '../theme';
 
-export default function TradeDetailScreen({ route }: { route: any }) {
+export default function TradeDetailScreen({ route, navigation }: { route: any; navigation: any }) {
   const trade: Trade = route.params.trade;
+  const api = useApi();
+  const { signOut } = useAuth();
+  const [deleting, setDeleting] = useState(false);
+
+  function confirmDelete() {
+    Alert.alert(
+      'Supprimer le trade',
+      'Cette action est définitive. Continuer ?',
+      [
+        { text: 'Annuler', style: 'cancel' },
+        {
+          text: 'Supprimer',
+          style: 'destructive',
+          onPress: async () => {
+            setDeleting(true);
+            try {
+              await api.deleteTrade(trade.id);
+              navigation.goBack(); // the trades list refreshes on focus
+            } catch (e) {
+              if (e instanceof ApiError && e.status === 401) {
+                await signOut();
+                return;
+              }
+              setDeleting(false);
+              Alert.alert('Échec de la suppression', e instanceof Error ? e.message : 'Erreur inconnue');
+            }
+          },
+        },
+      ],
+    );
+  }
 
   const rows: Array<[string, string]> = [
     ['Symbole', trade.symbol],
@@ -64,6 +98,18 @@ export default function TradeDetailScreen({ route }: { route: any }) {
           <Image source={{ uri: trade.screenshot_url }} style={styles.screenshot} resizeMode="contain" />
         </View>
       ) : null}
+
+      <Pressable
+        style={[styles.deleteBtn, deleting && { opacity: 0.6 }]}
+        onPress={confirmDelete}
+        disabled={deleting}
+      >
+        {deleting ? (
+          <ActivityIndicator color={colors.red} />
+        ) : (
+          <Text style={styles.deleteText}>Supprimer le trade</Text>
+        )}
+      </Pressable>
     </ScrollView>
   );
 }
@@ -115,4 +161,13 @@ const styles = StyleSheet.create({
   notes: { marginTop: spacing.md },
   notesText: { color: colors.text, fontSize: 14, marginTop: spacing.xs, lineHeight: 20 },
   screenshot: { width: '100%', height: 240, borderRadius: 8, marginTop: spacing.xs, backgroundColor: colors.card },
+  deleteBtn: {
+    marginTop: spacing.lg,
+    paddingVertical: spacing.md,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.red,
+    alignItems: 'center',
+  },
+  deleteText: { color: colors.red, fontSize: 15, fontWeight: '600' },
 });

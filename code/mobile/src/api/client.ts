@@ -118,6 +118,10 @@ export function createApi(baseUrl: string, token?: string | null) {
         body: JSON.stringify(patch),
       }),
 
+    /** Delete a trade. */
+    deleteTrade: (id: string) =>
+      request<void>(`/trades/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
     /** Aggregated analytics. */
     getStats: (filters?: Partial<TradeFilters>) =>
       request<TradeStats>(`/trades/stats${buildQuery(filters)}`),
@@ -135,6 +139,10 @@ export function createApi(baseUrl: string, token?: string | null) {
         method: 'PUT',
         body: JSON.stringify(patch),
       }),
+
+    /** Delete an account and, in cascade, its trades and prop rules. */
+    deleteAccount: (id: string) =>
+      request<void>(`/accounts/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
     /** Get prop firm rules for an account (throws 404 if unset). */
     getRules: (accountId: string) =>
