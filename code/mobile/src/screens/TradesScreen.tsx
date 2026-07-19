@@ -16,7 +16,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import { CalendarHeatmap } from '../components/CalendarHeatmap';
 import { dailyPnlSeries } from '../utils/series';
 
-import type { Trade } from '../api/types';
+import type { Account, Trade } from '../api/types';
 import { ApiError } from '../api/client';
 import { useApi } from '../hooks/useApi';
 import { useAuth } from '../auth/AuthContext';
@@ -80,6 +80,29 @@ export default function TradesScreen({ navigation }: { navigation: any }) {
     load();
   }, [load]);
 
+  // Ask which account to import into. Resolves to an account id, `undefined`
+  // for "Auto" (let the backend resolve from the report), or `null` if cancelled.
+  const chooseTarget = useCallback(async (): Promise<string | undefined | null> => {
+    let accounts: Account[] = [];
+    try {
+      accounts = await api.listAccounts();
+    } catch {
+      return undefined; // can't list → just go Auto rather than block the import
+    }
+    return new Promise((resolve) => {
+      Alert.alert(
+        'Importer dans quel compte ?',
+        undefined,
+        [
+          { text: 'Auto (depuis le report)', onPress: () => resolve(undefined) },
+          ...accounts.map((a) => ({ text: a.name, onPress: () => resolve(a.id) })),
+          { text: 'Annuler', style: 'cancel' as const, onPress: () => resolve(null) },
+        ],
+        { cancelable: true, onDismiss: () => resolve(null) },
+      );
+    });
+  }, [api]);
+
   // Pick an MT5 export (.xlsx or .csv) and upload it to the backend.
   const onImport = useCallback(async () => {
     try {
@@ -95,15 +118,20 @@ export default function TradesScreen({ navigation }: { navigation: any }) {
       });
       if (picked.canceled) return;
 
+      const accountId = await chooseTarget();
+      if (accountId === null) return; // cancelled the account step
+
       setImporting(true);
       const asset = picked.assets[0];
       const fileResp = await fetch(asset.uri); // read local file
       const blob = await fileResp.blob();
-      const summary = await api.importFile(blob);
+      const summary = await api.importFile(blob, accountId);
 
+      const target = summary.account_name ? `Compte : ${summary.account_name}\n` : '';
       Alert.alert(
         'Import terminé',
-        `${summary.imported} ajouté(s), ${summary.skipped_duplicates} doublon(s) ignoré(s)` +
+        target +
+          `${summary.imported} ajouté(s), ${summary.skipped_duplicates} doublon(s) ignoré(s)` +
           (summary.failed ? `, ${summary.failed} échec(s)` : '') +
           '.',
       );
@@ -117,7 +145,7 @@ export default function TradesScreen({ navigation }: { navigation: any }) {
     } finally {
       setImporting(false);
     }
-  }, [api, load, signOut]);
+  }, [api, load, signOut, chooseTarget]);
 
   // Header "+" : choose import or manual entry.
   const openAdd = useCallback(() => {
