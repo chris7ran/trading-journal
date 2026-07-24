@@ -45,6 +45,7 @@ const INDICATOR_CCY: Record<string, string> = {
   'États-Unis': 'USD',
   'Zone euro': 'EUR',
   Allemagne: 'EUR',
+  'Royaume-Uni': 'GBP',
   Japon: 'JPY',
   Or: 'USD', // USD-denominated / US-rate driven
   Pétrole: 'USD',

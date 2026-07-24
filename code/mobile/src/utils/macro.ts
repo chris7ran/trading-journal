@@ -33,6 +33,7 @@ const REGION_CCY: Record<string, string> = {
   'États-Unis': 'USD',
   'Zone euro': 'EUR',
   Allemagne: 'EUR',
+  'Royaume-Uni': 'GBP',
   Japon: 'JPY',
 };
 
@@ -85,6 +86,7 @@ export interface MacroCommentary {
 function indicesFor(region: string): string {
   if (region === 'États-Unis') return 'les indices US (US30, Nasdaq, S&P 500)';
   if (region === 'Zone euro' || region === 'Allemagne') return 'les indices européens (DAX, CAC)';
+  if (region === 'Royaume-Uni') return 'le FTSE 100';
   if (region === 'Japon') return 'le Nikkei';
   return 'les indices actions';
 }
