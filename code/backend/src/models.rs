@@ -266,6 +266,16 @@ pub struct NewsItem {
     pub sentiment: String, // "bullish" | "bearish" | "neutral"
 }
 
+/// Weekly CFTC Commitments of Traders positioning for one futures contract
+/// (leveraged funds = speculative hedge funds).
+#[derive(Debug, Clone, Serialize)]
+pub struct CotEntry {
+    pub marche: String, // "S&P 500" | "EUR" ...
+    pub net: i64,       // long - short (leveraged funds)
+    pub chg_hebdo: i64, // week-over-week change in net
+    pub date: String,   // report date, YYYY-MM-DD
+}
+
 /// Macro economic indicator (World Bank) or market instrument (Stooq), with a
 /// small history for a sparkline.
 #[derive(Debug, Clone, Serialize)]

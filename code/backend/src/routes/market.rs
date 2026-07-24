@@ -14,7 +14,7 @@ use axum::Json;
 use serde::Deserialize;
 
 use crate::error::{AppError, AppResult};
-use crate::models::{EcoEvent, EconIndicator, NewsItem};
+use crate::models::{CotEntry, EcoEvent, EconIndicator, NewsItem};
 
 // In-memory caches. faireconomy rate-limits to 2 downloads / 5 min, so we serve
 // a cached copy and only refresh after the TTL — and fall back to stale data if
@@ -22,10 +22,12 @@ use crate::models::{EcoEvent, EconIndicator, NewsItem};
 const CALENDAR_TTL: Duration = Duration::from_secs(15 * 60);
 const NEWS_TTL: Duration = Duration::from_secs(10 * 60);
 const ECON_TTL: Duration = Duration::from_secs(12 * 60 * 60); // annual data — refresh rarely
+const COT_TTL: Duration = Duration::from_secs(6 * 60 * 60); // CFTC publishes weekly
 
 static CALENDAR_CACHE: Mutex<Option<(Instant, Vec<EcoEvent>)>> = Mutex::new(None);
 static NEWS_CACHE: Mutex<Option<(Instant, Vec<NewsItem>)>> = Mutex::new(None);
 static ECON_CACHE: Mutex<Option<(Instant, Vec<EconIndicator>)>> = Mutex::new(None);
+static COT_CACHE: Mutex<Option<(Instant, Vec<CotEntry>)>> = Mutex::new(None);
 
 // World Bank indicators (free, no key): (label, region, ISO3, code, unit).
 const WB_INDICATORS: &[(&str, &str, &str, &str, &str)] = &[
@@ -62,7 +64,10 @@ const WB_INDICATORS: &[(&str, &str, &str, &str, &str)] = &[
 const CALENDAR_URLS: &[&str] = &["https://nfs.faireconomy.media/ff_calendar_thisweek.json"];
 
 // Public RSS feeds by theme (no key). Investing.com: news_1=Forex, news_95=macro
-// indicators, news_25=stock/indices. MarketWatch = US/Wall Street.
+// indicators, news_25=stock/indices. MarketWatch = US/Wall Street. The rest are
+// broker/analysis feeds and central-bank press wires (Fed/ECB/BoE/BoJ).
+// Skipped after live checks: DailyFX (HTTP 403, Akamai-blocked) and the CNBC
+// combinednewsletter feed (returns an empty channel, 0 items).
 const NEWS_FEEDS: &[(&str, &str)] = &[
     (
         "Investing · Forex",
@@ -80,6 +85,13 @@ const NEWS_FEEDS: &[(&str, &str)] = &[
         "MarketWatch",
         "https://feeds.content.dowjones.io/public/rss/mw_topstories",
     ),
+    // ForexLive redirects to its new investinglive.com home; use it directly.
+    ("ForexLive", "https://investinglive.com/feed/news"),
+    ("FXStreet", "https://www.fxstreet.com/rss/news"),
+    ("Fed", "https://www.federalreserve.gov/feeds/press_all.xml"),
+    ("BCE", "https://www.ecb.europa.eu/rss/press.html"),
+    ("BoE", "https://www.bankofengland.co.uk/rss/news"),
+    ("BoJ", "https://www.boj.or.jp/en/rss/whatsnew.xml"),
 ];
 
 const USER_AGENT: &str = "Mozilla/5.0 (compatible; TradingJournal/0.1; +https://example.local)";
@@ -559,9 +571,24 @@ async fn fetch_markets(client: &reqwest::Client) -> Vec<EconIndicator> {
     out
 }
 
-// FRED monthly US series (needs a free API key in FRED_API_KEY):
-// (label, region, unit, series_id, units). units "pc1" = % change vs year ago.
+// FRED monthly macro series (needs a free API key in FRED_API_KEY):
+// (label, region, unit, series_id, units). FRED `units`: pc1 = % change vs a year
+// ago, lin = level, chg = change vs previous period. All IDs below were confirmed
+// live via the keyless fredgraph.csv endpoint.
+//
+// Region labels match the mobile currency map ("Zone euro" lowercase e).
+//
+// Skipped (fredgraph 404, invalid IDs): the ECB HICP `CPALTT01EZM659N`, euro-area
+// GDP `CLVMEURSCAB1GQEZ` and BoE `BOERATED` from the source list. The first two
+// are replaced here by live equivalents (CP0000EZ19M086NEST, CLVMNACSCAB1GQEA19);
+// no clean keyless replacement was found for the BoE Bank Rate.
+//
+// Skipped (discontinued OECD series, data frozen years ago): JP CPI
+// `CPALTT01JPM659N` (last 2021-06) and BoJ discount rate `INTDSRJPM193N` (2017-04).
+// The German/UK CPI series (CPALTT01*) are also OECD-MEI and end 2025-03 — kept as
+// the latest available, but flagged.
 const FRED_SERIES: &[(&str, &str, &str, &str, &str)] = &[
+    // United States
     (
         "Inflation US (CPI a/a)",
         "États-Unis",
@@ -572,6 +599,46 @@ const FRED_SERIES: &[(&str, &str, &str, &str, &str)] = &[
     ("Chômage US", "États-Unis", "%", "UNRATE", "lin"),
     ("Taux directeur Fed", "États-Unis", "%", "FEDFUNDS", "lin"),
     ("Croissance PIB US (a/a)", "États-Unis", "%", "GDPC1", "pc1"),
+    ("Core CPI", "États-Unis", "%", "CPILFESL", "pc1"),
+    ("Core PCE", "États-Unis", "%", "PCEPILFE", "pc1"),
+    ("Nonfarm Payrolls", "États-Unis", "K", "PAYEMS", "chg"),
+    ("Ventes au détail", "États-Unis", "%", "RSAFS", "pc1"),
+    (
+        "Confiance Conso (Mich.)",
+        "États-Unis",
+        "",
+        "UMCSENT",
+        "lin",
+    ),
+    // Euro area / Germany — HICP + GDP use live replacements for dead source IDs.
+    (
+        "HICP Zone Euro",
+        "Zone euro",
+        "%",
+        "CP0000EZ19M086NEST",
+        "pc1",
+    ),
+    (
+        "PIB Zone Euro",
+        "Zone euro",
+        "%",
+        "CLVMNACSCAB1GQEA19",
+        "pc1",
+    ),
+    ("Taux Dépôt BCE", "Zone euro", "%", "ECBDFR", "lin"),
+    ("IPC Allemagne", "Allemagne", "%", "CPALTT01DEM659N", "pc1"),
+    (
+        "Chômage Allemagne",
+        "Allemagne",
+        "%",
+        "LRHUTTTTDEM156S",
+        "lin",
+    ),
+    // United Kingdom
+    ("IPC UK", "Royaume-Uni", "%", "CPALTT01GBM659N", "pc1"),
+    ("Chômage UK", "Royaume-Uni", "%", "LRHUTTTTGBM156S", "lin"),
+    // Japan
+    ("Chômage Japon", "Japon", "%", "LRHUTTTTJPM156S", "lin"),
 ];
 
 /// Fetch monthly US macro series from FRED. Empty if no API key set.
@@ -675,4 +742,216 @@ pub async fn economy() -> AppResult<Json<Vec<EconIndicator>>> {
         }
     }
     Ok(Json(data))
+}
+
+// CFTC Commitments of Traders — TFF (Traders in Financial Futures), Futures Only.
+// Open Socrata API, no key. NB: the source list named `6dca-aqww`, but that is the
+// *Legacy* dataset (no leveraged-fund fields); `gpe5-46if` is the TFF dataset that
+// carries `lev_money_positions_*`. Covers US futures only — no DAX (Eurex).
+const COT_URL: &str = "https://publicreporting.cftc.gov/resource/gpe5-46if.json";
+
+// (CFTC contract market code, label). The Yen code is 097741 in the TFF dataset
+// (the source list's 098741 is the Legacy code and returns nothing here).
+const COT_CONTRACTS: &[(&str, &str)] = &[
+    ("098662", "S&P 500"),
+    ("209742", "Nasdaq 100"),
+    ("124603", "Dow (YM)"),
+    ("099741", "EUR"),
+    ("096742", "GBP"),
+    ("097741", "JPY"),
+];
+
+/// Read a Socrata numeric field that may arrive as a JSON string or number.
+fn socrata_num(row: &serde_json::Value, key: &str) -> Option<i64> {
+    let v = row.get(key)?;
+    if let Some(s) = v.as_str() {
+        // Values look like "111379"; tolerate a stray decimal ("111379.0").
+        return s
+            .parse::<i64>()
+            .ok()
+            .or_else(|| s.parse::<f64>().ok().map(|f| f as i64));
+    }
+    v.as_i64().or_else(|| v.as_f64().map(|f| f as i64))
+}
+
+/// Fetch the latest CoT publication for each tracked contract (leveraged funds).
+async fn fetch_cot(client: &reqwest::Client) -> Vec<CotEntry> {
+    let where_clause = format!(
+        "cftc_contract_market_code in({})",
+        COT_CONTRACTS
+            .iter()
+            .map(|(c, _)| format!("'{c}'"))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+
+    // 60 rows (10 weeks × 6 contracts) is plenty to include every contract's most
+    // recent report; we pick the latest row per code below.
+    let value: serde_json::Value = match client
+        .get(COT_URL)
+        .query(&[
+            ("$where", where_clause.as_str()),
+            ("$order", "report_date_as_yyyy_mm_dd DESC"),
+            ("$limit", "60"),
+        ])
+        .send()
+        .await
+    {
+        Ok(resp) => match resp.json().await {
+            Ok(j) => j,
+            Err(e) => {
+                tracing::warn!(error = %e, "CoT: JSON illisible");
+                return Vec::new();
+            }
+        },
+        Err(e) => {
+            tracing::warn!(error = %e, "CoT: requête échouée");
+            return Vec::new();
+        }
+    };
+
+    let rows = match value.as_array() {
+        Some(r) => r,
+        None => return Vec::new(),
+    };
+
+    let out = map_cot_rows(rows);
+    tracing::info!(count = out.len(), "CoT: contrats récupérés");
+    out
+}
+
+/// Pure mapping: given date-desc Socrata rows, take the latest publication of each
+/// tracked contract and build its `CotEntry`. Skips contracts absent or missing
+/// position fields.
+fn map_cot_rows(rows: &[serde_json::Value]) -> Vec<CotEntry> {
+    let mut out: Vec<CotEntry> = Vec::new();
+    for (code, label) in COT_CONTRACTS {
+        // Rows are date-desc, so the first match is the latest publication.
+        let row = match rows
+            .iter()
+            .find(|r| r.get("cftc_contract_market_code").and_then(|v| v.as_str()) == Some(*code))
+        {
+            Some(r) => r,
+            None => {
+                tracing::warn!(%code, %label, "CoT: aucun rapport pour ce contrat");
+                continue;
+            }
+        };
+
+        let (long, short) = match (
+            socrata_num(row, "lev_money_positions_long"),
+            socrata_num(row, "lev_money_positions_short"),
+        ) {
+            (Some(l), Some(s)) => (l, s),
+            _ => {
+                tracing::warn!(%code, %label, "CoT: positions manquantes");
+                continue;
+            }
+        };
+        let chg = socrata_num(row, "change_in_lev_money_long").unwrap_or(0)
+            - socrata_num(row, "change_in_lev_money_short").unwrap_or(0);
+        let date = row
+            .get("report_date_as_yyyy_mm_dd")
+            .and_then(|v| v.as_str())
+            .map(|s| s.chars().take(10).collect::<String>())
+            .unwrap_or_default();
+
+        out.push(CotEntry {
+            marche: label.to_string(),
+            net: long - short,
+            chg_hebdo: chg,
+            date,
+        });
+    }
+    out
+}
+
+/// `GET /macro/cot` — weekly leveraged-fund positioning (cached, stale on failure).
+pub async fn cot() -> AppResult<Json<Vec<CotEntry>>> {
+    if let Ok(guard) = COT_CACHE.lock() {
+        if let Some((ts, data)) = guard.as_ref() {
+            if ts.elapsed() < COT_TTL {
+                return Ok(Json(data.clone()));
+            }
+        }
+    }
+
+    let client = http_client()?;
+    let items = fetch_cot(&client).await;
+    if !items.is_empty() {
+        if let Ok(mut guard) = COT_CACHE.lock() {
+            *guard = Some((Instant::now(), items.clone()));
+        }
+        return Ok(Json(items));
+    }
+
+    if let Ok(guard) = COT_CACHE.lock() {
+        if let Some((_, stale)) = guard.as_ref() {
+            return Ok(Json(stale.clone()));
+        }
+    }
+    Ok(Json(items))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn maps_latest_cot_row_per_contract() {
+        // Two weeks for S&P (date-desc), one for EUR, none for the rest. Fields
+        // arrive as strings (as Socrata sends them), incl. a negative change.
+        let rows = vec![
+            json!({
+                "cftc_contract_market_code": "098662",
+                "report_date_as_yyyy_mm_dd": "2026-07-14T00:00:00.000",
+                "lev_money_positions_long": "10000",
+                "lev_money_positions_short": "14866",
+                "change_in_lev_money_long": "100",
+                "change_in_lev_money_short": "512"
+            }),
+            json!({
+                "cftc_contract_market_code": "098662",
+                "report_date_as_yyyy_mm_dd": "2026-07-07T00:00:00.000",
+                "lev_money_positions_long": "9000",
+                "lev_money_positions_short": "9000",
+                "change_in_lev_money_long": "0",
+                "change_in_lev_money_short": "0"
+            }),
+            json!({
+                "cftc_contract_market_code": "099741",
+                "report_date_as_yyyy_mm_dd": "2026-07-14T00:00:00.000",
+                "lev_money_positions_long": "80000",
+                "lev_money_positions_short": "133691",
+                "change_in_lev_money_long": "1000",
+                "change_in_lev_money_short": "9230"
+            }),
+        ];
+
+        let out = map_cot_rows(&rows);
+        // Only the two contracts present in the data are returned.
+        assert_eq!(out.len(), 2);
+
+        let sp = &out[0]; // COT_CONTRACTS order: S&P 500 first
+        assert_eq!(sp.marche, "S&P 500");
+        assert_eq!(sp.net, 10000 - 14866); // latest week only
+        assert_eq!(sp.chg_hebdo, 100 - 512); // -412
+        assert_eq!(sp.date, "2026-07-14");
+
+        let eur = &out[1];
+        assert_eq!(eur.marche, "EUR");
+        assert_eq!(eur.net, 80000 - 133691);
+        assert_eq!(eur.chg_hebdo, 1000 - 9230);
+    }
+
+    #[test]
+    fn socrata_num_parses_string_number_and_negative() {
+        let row = json!({ "s": "111379", "n": 42, "neg": "-412", "dec": "100.0" });
+        assert_eq!(socrata_num(&row, "s"), Some(111379));
+        assert_eq!(socrata_num(&row, "n"), Some(42));
+        assert_eq!(socrata_num(&row, "neg"), Some(-412));
+        assert_eq!(socrata_num(&row, "dec"), Some(100));
+        assert_eq!(socrata_num(&row, "missing"), None);
+    }
 }

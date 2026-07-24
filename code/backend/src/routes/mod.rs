@@ -71,6 +71,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/macro/calendar", get(market::calendar))
         .route("/macro/news", get(market::news))
         .route("/macro/economy", get(market::economy))
+        .route("/macro/cot", get(market::cot))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth_middleware::require_auth,
