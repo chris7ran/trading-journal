@@ -202,6 +202,14 @@ export interface EconIndicator {
   category: 'macro' | 'market' | 'macro_monthly';
 }
 
+/** Weekly CFTC Commitments of Traders positioning (leveraged funds). */
+export interface CotEntry {
+  marche: string; // "S&P 500" | "EUR" ...
+  net: number; // long - short
+  chg_hebdo: number; // week-over-week change in net
+  date: string; // YYYY-MM-DD
+}
+
 /** Optional filters for GET /trades. */
 export interface TradeFilters {
   account_id?: string;

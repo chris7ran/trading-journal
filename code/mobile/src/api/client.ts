@@ -6,6 +6,7 @@
 
 import type {
   Account,
+  CotEntry,
   EcoEvent,
   EconIndicator,
   ImportSummary,
@@ -163,6 +164,9 @@ export function createApi(baseUrl: string, token?: string | null) {
 
     /** Key macro economic indicators (World Bank). */
     getEconomy: () => request<EconIndicator[]>('/macro/economy'),
+
+    /** Weekly CFTC CoT positioning (leveraged funds) per tracked contract. */
+    getCot: () => request<CotEntry[]>('/macro/cot'),
 
     /** List trading setups / patterns. */
     listSetups: () => request<Setup[]>('/setups'),

@@ -12,7 +12,7 @@ import {
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 
-import type { EcoEvent, EconIndicator } from '../api/types';
+import type { CotEntry, EcoEvent, EconIndicator } from '../api/types';
 import { ApiError } from '../api/client';
 import { useApi } from '../hooks/useApi';
 import { useAuth } from '../auth/AuthContext';
@@ -29,6 +29,7 @@ export default function CalendarScreen() {
   const { signOut } = useAuth();
   const [events, setEvents] = useState<EcoEvent[]>([]);
   const [econ, setEcon] = useState<EconIndicator[]>([]);
+  const [cot, setCot] = useState<CotEntry[]>([]);
   const [asset, setAsset] = useState<Asset>('all');
   // Impact filter: high (red) + medium (orange) on by default, low (yellow) off.
   const [impacts, setImpacts] = useState<{ red: boolean; orange: boolean; yellow: boolean }>({
@@ -44,8 +45,12 @@ export default function CalendarScreen() {
   const load = useCallback(async () => {
     setError(null);
     try {
-      // Calendar + indicators independently; one failing doesn't blank the other.
-      const [cal, ec] = await Promise.allSettled([api.getCalendar(), api.getEconomy()]);
+      // Calendar + indicators + CoT independently; one failing doesn't blank the rest.
+      const [cal, ec, ct] = await Promise.allSettled([
+        api.getCalendar(),
+        api.getEconomy(),
+        api.getCot(),
+      ]);
       if (cal.status === 'fulfilled') {
         setEvents([...cal.value].sort((a, b) => a.date.localeCompare(b.date)));
       } else if (cal.reason instanceof ApiError && cal.reason.status === 401) {
@@ -55,6 +60,7 @@ export default function CalendarScreen() {
         setError(cal.reason instanceof Error ? cal.reason.message : 'Calendrier injoignable.');
       }
       if (ec.status === 'fulfilled') setEcon(ec.value);
+      if (ct.status === 'fulfilled') setCot(ct.value);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -90,6 +96,16 @@ export default function CalendarScreen() {
     };
   }, [econ, asset]);
   const hasIndicators = grouped.monthly.length + grouped.market.length + grouped.annual.length > 0;
+
+  // CoT positioning grouped by region: US index futures vs FX.
+  const cotGroups = useMemo(() => {
+    const indices = ['S&P 500', 'Nasdaq 100', 'Dow (YM)'];
+    const fx = ['EUR', 'GBP', 'JPY'];
+    return [
+      { region: 'Indices US', rows: cot.filter((c) => indices.includes(c.marche)) },
+      { region: 'Devises', rows: cot.filter((c) => fx.includes(c.marche)) },
+    ].filter((g) => g.rows.length > 0);
+  }, [cot]);
 
   const IMPACTS: { key: 'red' | 'orange' | 'yellow'; label: string; color: string }[] = [
     { key: 'red', label: 'Fort', color: colors.red },
@@ -137,6 +153,21 @@ export default function CalendarScreen() {
               <IndicatorRow title="Mensuel" items={grouped.monthly} events={events} onSelect={setSelected} />
               <IndicatorRow title="Marché" items={grouped.market} events={events} onSelect={setSelected} />
               <IndicatorRow title="Annuel" items={grouped.annual} events={events} onSelect={setSelected} />
+            </Section>
+          ) : null}
+
+          {cot.length > 0 ? (
+            <Section title="Positionnement CoT" flush>
+              <Text style={styles.cotCaption}>positionnement institutionnel, hebdomadaire</Text>
+              {cotGroups.map((g) => (
+                <View key={g.region}>
+                  <Text style={styles.subLabel}>{g.region}</Text>
+                  {g.rows.map((c) => (
+                    <CotRow key={c.marche} entry={c} />
+                  ))}
+                </View>
+              ))}
+              {cot[0]?.date ? <Text style={styles.cotDate}>Rapport CFTC du {cot[0].date}</Text> : null}
             </Section>
           ) : null}
 
@@ -247,9 +278,42 @@ function IndicatorRow({
   );
 }
 
+/** One CoT contract row: net long/short and the week-over-week change arrow. */
+function CotRow({ entry }: { entry: CotEntry }) {
+  const netLong = entry.net >= 0;
+  const chgUp = entry.chg_hebdo >= 0;
+  return (
+    <View style={styles.cotRow}>
+      <Text style={styles.cotMarket}>{entry.marche}</Text>
+      <View style={styles.cotVals}>
+        <Text style={[styles.cotNet, { color: netLong ? colors.green : colors.red }]}>
+          {netLong ? 'net long' : 'net short'} {Math.abs(entry.net).toLocaleString('fr-FR')}
+        </Text>
+        <Text style={[styles.cotChg, { color: chgUp ? colors.green : colors.red }]}>
+          {chgUp ? '▲' : '▼'} {Math.abs(entry.chg_hebdo).toLocaleString('fr-FR')} vs sem.
+        </Text>
+      </View>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bg },
   scroll: { flex: 1 },
+  cotCaption: { color: colors.textMuted, fontSize: 11, fontStyle: 'italic', marginBottom: spacing.sm },
+  cotDate: { color: colors.textMuted, fontSize: 11, marginTop: spacing.xs },
+  cotRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: spacing.sm,
+    borderBottomColor: colors.border,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  cotMarket: { color: colors.text, fontSize: 14, fontWeight: '500' },
+  cotVals: { alignItems: 'flex-end' },
+  cotNet: { fontSize: 14, fontWeight: '600' },
+  cotChg: { fontSize: 11, marginTop: 2 },
   centered: { flex: 1, justifyContent: 'center' },
   content: { padding: spacing.md, paddingBottom: spacing.lg * 2 },
   error: { color: colors.red, marginBottom: spacing.sm },
