@@ -84,11 +84,12 @@ pub async fn create_trade(
         r#"
         INSERT INTO trades (
             id, account_id, symbol, direction, open_time, close_time,
-            open_price, close_price, lot_size, pnl, pnl_pct, commission, swap,
+            open_price, close_price, stop_loss, take_profit, lot_size,
+            pnl, pnl_pct, commission, swap,
             setup_tag, emotion_tag, notes, screenshot_url, mt5_ticket,
             followed_plan, respected_sl, pattern_valid, thesis_worked, good_exit
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#,
     )
     .bind(&id)
@@ -99,6 +100,8 @@ pub async fn create_trade(
     .bind(&input.close_time)
     .bind(input.open_price)
     .bind(input.close_price)
+    .bind(input.stop_loss)
+    .bind(input.take_profit)
     .bind(input.lot_size)
     .bind(input.pnl)
     .bind(input.pnl_pct)
@@ -177,6 +180,8 @@ pub async fn update_trade(
     set_field!("close_time", patch.close_time);
     set_field!("open_price", patch.open_price);
     set_field!("close_price", patch.close_price);
+    set_field!("stop_loss", patch.stop_loss);
+    set_field!("take_profit", patch.take_profit);
     set_field!("lot_size", patch.lot_size);
     set_field!("pnl", patch.pnl);
     set_field!("pnl_pct", patch.pnl_pct);
