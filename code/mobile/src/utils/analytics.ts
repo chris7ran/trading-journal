@@ -24,6 +24,36 @@ function durationMin(t: Trade): number | null {
   return (c - o) / 60000;
 }
 
+// --- R multiple --------------------------------------------------------------
+
+/**
+ * Realised R multiple in *price* terms — independent of the instrument's point
+ * value, so it works across FX / indices / metals without a per-symbol tick map.
+ *
+ *   risk   = |open_price - stop_loss|
+ *   reward = |close_price - open_price|
+ *   R      = (reward / risk) * sign(pnl)
+ *
+ * Returns null when there's no stop loss (or the inputs needed can't be read),
+ * so callers can ignore un-stopped trades cleanly.
+ */
+export function rMultiple(t: Trade): number | null {
+  const { open_price: open, close_price: close, stop_loss: sl, pnl } = t;
+  if (open == null || close == null || sl == null || pnl == null) return null;
+  const risk = Math.abs(open - sl);
+  if (risk === 0) return null;
+  const reward = Math.abs(close - open);
+  const sign = pnl > 0 ? 1 : pnl < 0 ? -1 : 0;
+  return (reward / risk) * sign;
+}
+
+/** Average realised R over the trades that have a usable R (a stop loss). */
+export function avgR(trades: Trade[]): { avg: number; count: number } {
+  const rs = trades.map(rMultiple).filter((r): r is number => r !== null);
+  if (rs.length === 0) return { avg: 0, count: 0 };
+  return { avg: rs.reduce((s, r) => s + r, 0) / rs.length, count: rs.length };
+}
+
 // --- Risk & discipline metrics ----------------------------------------------
 
 export interface RiskMetrics {

@@ -9,6 +9,8 @@ export interface Trade {
   close_time: string | null;
   open_price: number | null;
   close_price: number | null;
+  stop_loss: number | null;
+  take_profit: number | null;
   lot_size: number | null;
   pnl: number | null;
   pnl_pct: number | null;
@@ -113,6 +115,8 @@ export interface NewTrade extends TradeReview {
   close_time?: string | null;
   open_price?: number | null;
   close_price?: number | null;
+  stop_loss?: number | null;
+  take_profit?: number | null;
   lot_size?: number | null;
   pnl?: number | null;
   setup_tag?: string | null;
