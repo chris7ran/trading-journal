@@ -169,6 +169,13 @@ fn parse_rows(rows: Vec<Vec<String>>) -> Result<ParseResult, String> {
             close_time: get(cols.close_time).map(normalize_datetime),
             open_price: get(cols.open_price).and_then(|v| parse_number(&v)),
             close_price: get(cols.close_price).and_then(|v| parse_number(&v)),
+            // MT5 writes 0 when no SL/TP is set — treat that as absent.
+            stop_loss: get(cols.stop_loss)
+                .and_then(|v| parse_number(&v))
+                .filter(|v| *v != 0.0),
+            take_profit: get(cols.take_profit)
+                .and_then(|v| parse_number(&v))
+                .filter(|v| *v != 0.0),
             lot_size: get(cols.volume).and_then(|v| parse_number(&v)),
             pnl,
             pnl_pct: None,
@@ -287,6 +294,8 @@ struct ColumnMap {
     close_time: Option<usize>,
     open_price: Option<usize>,
     close_price: Option<usize>,
+    stop_loss: Option<usize>,
+    take_profit: Option<usize>,
     commission: Option<usize>,
     swap: Option<usize>,
     profit: Option<usize>,
@@ -297,6 +306,14 @@ impl ColumnMap {
     fn from_headers(header: &[String]) -> Self {
         let find = |names: &[&str]| -> Option<usize> {
             header.iter().position(|h| names.contains(&h.as_str()))
+        };
+        // Match ignoring internal spaces, so the report's "S / L" / "T / P"
+        // headers match "s/l" / "t/p" regardless of spacing.
+        let find_norm = |names: &[&str]| -> Option<usize> {
+            header.iter().position(|h| {
+                let squished: String = h.chars().filter(|c| !c.is_whitespace()).collect();
+                names.contains(&squished.as_str())
+            })
         };
         // Indices of all columns whose header *contains* any needle — used for
         // the duplicated Heure/Prix (Time/Price) columns.
@@ -330,6 +347,8 @@ impl ColumnMap {
             close_time,
             open_price,
             close_price,
+            stop_loss: find_norm(&["s/l", "sl", "stoploss", "stop_loss"]),
+            take_profit: find_norm(&["t/p", "tp", "takeprofit", "take_profit"]),
             commission: find(&["commission"]),
             swap: find(&["echange", "échange", "swap"]),
             profit: find(&["profit", "p/l", "pnl", "benefice", "bénéfice"]),
@@ -530,6 +549,9 @@ Heure d'ouverture,Ordre,Symbole,Type,Volume,Prix,S / L,T / P,Heure,État,,Commen
         assert_eq!(t0.close_time.as_deref(), Some("2025-12-24T16:34:47"));
         assert_eq!(t0.open_price, Some(48380.15));
         assert_eq!(t0.close_price, Some(48445.0));
+        // S/L and T/P columns (unique, between open and close price).
+        assert_eq!(t0.stop_loss, Some(48108.0));
+        assert_eq!(t0.take_profit, Some(48639.0));
         assert_eq!(t0.lot_size, Some(2.0));
         // Net P&L = profit 128.9 + commission 0.0 + swap -8.06 = 120.84.
         assert_eq!(t0.pnl, Some(120.84));
@@ -570,6 +592,9 @@ Time,Position,Symbol,Type,Volume,Price,S/L,T/P,Time,Price,Commission,Swap,Profit
         assert_eq!(res.trades[0].direction.as_deref(), Some("LONG"));
         // Net P&L = 50.0 + (-0.5) + 0 = 49.5.
         assert_eq!(res.trades[0].pnl, Some(49.5));
+        // "S/L"/"T/P" headers matched; their 0 values map to "no level" (None).
+        assert_eq!(res.trades[0].stop_loss, None);
+        assert_eq!(res.trades[0].take_profit, None);
     }
 
     #[test]
