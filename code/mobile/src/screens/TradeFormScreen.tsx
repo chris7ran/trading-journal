@@ -15,6 +15,7 @@ import {
   View,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
+import DateTimePicker from '@react-native-community/datetimepicker';
 
 import type { NewTrade, Setup, Trade, UpdateTrade } from '../api/types';
 import { ApiError } from '../api/client';
@@ -39,6 +40,11 @@ export default function TradeFormScreen({
   const [direction, setDirection] = useState<string>(existing?.direction ?? 'LONG');
   const [openPrice, setOpenPrice] = useState(numToStr(existing?.open_price));
   const [closePrice, setClosePrice] = useState(numToStr(existing?.close_price));
+  const [stopLoss, setStopLoss] = useState(numToStr(existing?.stop_loss));
+  const [takeProfit, setTakeProfit] = useState(numToStr(existing?.take_profit));
+  // Dates default to "now" for a new trade, prefilled for an edit.
+  const [openTime, setOpenTime] = useState<Date>(parseToDate(existing?.open_time) ?? new Date());
+  const [closeTime, setCloseTime] = useState<Date>(parseToDate(existing?.close_time) ?? new Date());
   const [lotSize, setLotSize] = useState(numToStr(existing?.lot_size));
   const [pnl, setPnl] = useState(numToStr(existing?.pnl));
   const [setupTag, setSetupTag] = useState(existing?.setup_tag ?? '');
@@ -84,8 +90,12 @@ export default function TradeFormScreen({
         const patch: UpdateTrade = {
           symbol: symbol.trim(),
           direction,
+          open_time: fmtDateTime(openTime),
+          close_time: fmtDateTime(closeTime),
           open_price: strToNum(openPrice),
           close_price: strToNum(closePrice),
+          stop_loss: strToNum(stopLoss),
+          take_profit: strToNum(takeProfit),
           lot_size: strToNum(lotSize),
           pnl: strToNum(pnl),
           setup_tag: emptyToNull(setupTag),
@@ -103,8 +113,12 @@ export default function TradeFormScreen({
         const body: NewTrade = {
           symbol: symbol.trim(),
           direction,
+          open_time: fmtDateTime(openTime),
+          close_time: fmtDateTime(closeTime),
           open_price: strToNum(openPrice),
           close_price: strToNum(closePrice),
+          stop_loss: strToNum(stopLoss),
+          take_profit: strToNum(takeProfit),
           lot_size: strToNum(lotSize),
           pnl: strToNum(pnl),
           setup_tag: emptyToNull(setupTag),
@@ -168,12 +182,24 @@ export default function TradeFormScreen({
           </View>
         </Field>
 
+        <DateTimeField label="Ouverture" value={openTime} onChange={setOpenTime} />
+        <DateTimeField label="Clôture" value={closeTime} onChange={setCloseTime} />
+
         <Row>
           <Field label="Prix entrée" flex>
             <NumInput value={openPrice} onChangeText={setOpenPrice} placeholder="18250" />
           </Field>
           <Field label="Prix sortie" flex>
             <NumInput value={closePrice} onChangeText={setClosePrice} placeholder="18302" />
+          </Field>
+        </Row>
+
+        <Row>
+          <Field label="Stop loss" flex>
+            <NumInput value={stopLoss} onChangeText={setStopLoss} placeholder="18200" />
+          </Field>
+          <Field label="Take profit" flex>
+            <NumInput value={takeProfit} onChangeText={setTakeProfit} placeholder="18400" />
           </Field>
         </Row>
 
@@ -321,6 +347,32 @@ function ReviewToggle({
   );
 }
 
+/** Combined date+time picker row. Uses the iOS compact inline control (this
+ * app targets iOS); on Android it falls back to the default spinner dialog. */
+function DateTimeField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: Date;
+  onChange: (d: Date) => void;
+}) {
+  return (
+    <View style={styles.dtField}>
+      <Text style={styles.label}>{label}</Text>
+      <DateTimePicker
+        value={value}
+        mode="datetime"
+        display={Platform.OS === 'ios' ? 'compact' : 'default'}
+        onChange={(_e, d) => {
+          if (d) onChange(d);
+        }}
+      />
+    </View>
+  );
+}
+
 function NumInput({
   value,
   onChangeText,
@@ -350,6 +402,19 @@ function numToStr(v: number | null | undefined): string {
   return v === null || v === undefined ? '' : String(v);
 }
 
+/** Parse a stored timestamp ("YYYY-MM-DDTHH:mm:ss" or space-separated) to Date. */
+function parseToDate(s: string | null | undefined): Date | null {
+  if (!s) return null;
+  const d = new Date(s.replace(' ', 'T'));
+  return isNaN(d.getTime()) ? null : d;
+}
+
+/** Format a Date as the backend's local ISO string "YYYY-MM-DDTHH:mm:ss". */
+function fmtDateTime(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
 function strToNum(s: string): number | null {
   const t = s.trim().replace(',', '.');
   if (t === '') return null;
@@ -366,6 +431,12 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bg },
   content: { padding: spacing.md, paddingBottom: spacing.lg * 2 },
   field: { marginBottom: spacing.md },
+  dtField: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: spacing.md,
+  },
   flex: { flex: 1 },
   row: { flexDirection: 'row', gap: spacing.md },
   label: { color: colors.textMuted, fontSize: 13, marginBottom: spacing.xs },

@@ -39,7 +39,8 @@
           "faceIDPermission": "Déverrouiller Trading Journal avec Face ID."
         }
       ],
-      "expo-font"
+      "expo-font",
+      "@react-native-community/datetimepicker"
     ]
   }
 }
