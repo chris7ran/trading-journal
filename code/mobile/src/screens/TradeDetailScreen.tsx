@@ -7,6 +7,7 @@ import { ApiError } from '../api/client';
 import type { Trade } from '../api/types';
 import { useApi } from '../hooks/useApi';
 import { useAuth } from '../auth/AuthContext';
+import { rMultiple } from '../utils/analytics';
 import { colors, formatPnl, pnlColor, spacing } from '../theme';
 
 export default function TradeDetailScreen({ route, navigation }: { route: any; navigation: any }) {
@@ -50,6 +51,8 @@ export default function TradeDetailScreen({ route, navigation }: { route: any; n
     ['Clôture', trade.close_time ?? '—'],
     ['Prix entrée', num(trade.open_price)],
     ['Prix sortie', num(trade.close_price)],
+    ['Stop loss', num(trade.stop_loss)],
+    ['Take profit', num(trade.take_profit)],
     ['Lot', num(trade.lot_size)],
     ['Commission', num(trade.commission)],
     ['Swap', num(trade.swap)],
@@ -65,6 +68,7 @@ export default function TradeDetailScreen({ route, navigation }: { route: any; n
         <Text style={[styles.pnlValue, { color: pnlColor(trade.pnl) }]}>
           {formatPnl(trade.pnl)}
         </Text>
+        <Text style={[styles.rValue, { color: rColor(rMultiple(trade)) }]}>{rLabel(rMultiple(trade))}</Text>
       </View>
 
       {rows.map(([label, value]) => (
@@ -131,6 +135,17 @@ function ReviewRow({ label, v }: { label: string; v: boolean | null }) {
   );
 }
 
+/** "+2.3R" / "-1.0R", or "—" when there's no stop loss to compute R from. */
+function rLabel(r: number | null): string {
+  if (r === null) return '—';
+  return `${r >= 0 ? '+' : ''}${r.toFixed(1)}R`;
+}
+
+function rColor(r: number | null): string {
+  if (r === null) return colors.textMuted;
+  return r >= 0 ? colors.green : colors.red;
+}
+
 function num(v: number | null): string {
   return v === null || v === undefined ? '—' : String(v);
 }
@@ -147,6 +162,7 @@ const styles = StyleSheet.create({
   },
   pnlLabel: { color: colors.textMuted, fontSize: 13 },
   pnlValue: { fontSize: 32, fontWeight: '800', marginTop: spacing.xs },
+  rValue: { fontSize: 16, fontWeight: '700', marginTop: spacing.xs },
   row: {
     flexDirection: 'row',
     justifyContent: 'space-between',

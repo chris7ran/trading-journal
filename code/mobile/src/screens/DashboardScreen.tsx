@@ -15,6 +15,7 @@ import { useApi } from '../hooks/useApi';
 import { useAuth } from '../auth/AuthContext';
 import { glow, money, moneySigned, neon } from '../theme-neon';
 import {
+  avgR,
   riskMetrics,
   setupPerformance,
   emotionBreakdown,
@@ -80,6 +81,7 @@ export default function DashboardScreen() {
   const s = useMemo(() => computeStats(filtered), [filtered]); // period (analysis)
   const rrr = s.avgLoss !== 0 ? s.avgWin / Math.abs(s.avgLoss) : null;
   const risk = useMemo(() => riskMetrics(filtered), [filtered]);
+  const rStats = useMemo(() => avgR(filtered), [filtered]);
   const totalFees = useMemo(
     () => filtered.reduce((acc, t) => acc + (t.commission ?? 0) + (t.swap ?? 0), 0),
     [filtered],
@@ -186,6 +188,15 @@ export default function DashboardScreen() {
           <View style={styles.row}>
             <Kpi label="Avg win" value={moneySigned(s.avgWin)} color={neon.green} glowIt />
             <Kpi label="Avg loss" value={moneySigned(s.avgLoss)} color={neon.red} glowIt />
+          </View>
+
+          <View style={styles.row}>
+            <Kpi
+              label={rStats.count === 0 ? 'R moyen' : `R moyen · sur ${rStats.count} trade${rStats.count > 1 ? 's' : ''}`}
+              value={rStats.count === 0 ? '—' : `${rStats.avg >= 0 ? '+' : ''}${rStats.avg.toFixed(1)}R`}
+              color={rStats.count === 0 ? undefined : rStats.avg >= 0 ? neon.green : neon.red}
+              glowIt
+            />
           </View>
 
           <Text style={styles.sectionLbl}>Où est ton edge</Text>
