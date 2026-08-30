@@ -38,6 +38,11 @@ no third-party cloud holding your data.
 - **Macro terminal** — economic calendar (impact-graded), key indicators
   (World Bank + **FRED** monthly US + Fed Funds), and live market data
   (gold, oil, US 2Y/10Y yields).
+- **Daily levels** — session ranges (Asia / London / New York), London and New
+  York **opening ranges**, previous-day extremes and liquidity **sweeps**,
+  computed from my own broker's M5 candles pushed by an [MT5 Expert
+  Advisor](code/mt5). Sessions are defined in their native market timezone, so
+  the numbers stay right across every DST changeover.
 - **Coach** — post-trade reflection and performance-by-emotion breakdown.
 - **Security** — password login hashed with **Argon2**, **JWT** sessions,
   biometric (Face ID) unlock, secrets in the device Keychain.

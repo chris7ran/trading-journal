@@ -266,3 +266,63 @@ curl -s -X POST "$BASE/trades/import/csv" \
 Native: rebuild, copy the binary over, `sudo systemctl restart trading-journal-api`.
 Docker: rebuild the image, `docker stop/rm tjapi`, run again (the `tjapi-data`
 volume preserves the database).
+
+---
+
+## Candle ingestion (MT5 feed)
+
+The daily-levels journal is fed by an Expert Advisor running in a Windows VM on
+the same host, pushing closed M5 candles over the tailnet. See
+[`../../mt5/README.md`](../../mt5/README.md) for the terminal side.
+
+### Server side
+
+Generate a token and add it to the environment file:
+
+```bash
+openssl rand -hex 24
+```
+
+```ini
+# api.env (Docker Compose) or /etc/trading-journal/api.env (systemd)
+INGEST_TOKEN=<the value you just generated>
+```
+
+Unlike `ADMIN_PASSWORD_HASH`, this value contains no `$`, so the Docker Compose
+interpolation trap does not apply here — paste it as-is.
+
+Restart, then check it took:
+
+```bash
+docker compose up -d
+docker compose exec api printenv INGEST_TOKEN
+```
+
+### Why a second credential rather than the JWT
+
+The EA is a headless machine client whose only job is to forward prices. Giving
+it a user session would mean parking a long-lived login on a Windows box, where
+a compromise would expose the whole journal. The ingest token grants exactly one
+capability — writing candles — so a leak cannot read trades, cannot touch
+accounts and cannot authenticate as the user. It is verified in a middleware
+layer, so an unauthenticated request is rejected before its body is even parsed.
+
+Leave `INGEST_TOKEN` empty to disable `/ingest/*` entirely.
+
+### Verify end to end
+
+```bash
+# From the MT5 VM, or any tailnet device:
+curl -s -H "X-Ingest-Token: $INGEST_TOKEN" \
+     https://<host>.<tailnet>.ts.net:8443/ingest/status
+
+# Expect: {"symbols":[...],"server_time":"..."}
+# 401 -> token mismatch (check for a trailing newline in api.env)
+```
+
+Once the EA has run, the levels for a given day:
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" \
+     "https://<host>.<tailnet>.ts.net:8443/levels?symbol=GER40&date=$(date +%F)" | jq
+```

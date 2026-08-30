@@ -27,6 +27,9 @@ sqlx = { version = "0.7", features = [
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }
+# Session windows are defined in their native market timezone (Europe/London,
+# America/New_York, Asia/Tokyo) so DST is handled correctly all year round.
+chrono-tz = "0.9"
 uuid = { version = "1", features = ["v4", "serde"] }
 
 # Auth

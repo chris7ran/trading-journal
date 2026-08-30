@@ -16,6 +16,12 @@ pub struct Config {
     pub jwt_ttl_hours: i64,
     /// Comma-separated list of allowed CORS origins, or `*`.
     pub cors_allowed_origins: String,
+    /// Shared secret presented by the MT5 Expert Advisor in `X-Ingest-Token`.
+    ///
+    /// Deliberately separate from the JWT: the EA is a headless machine client
+    /// that must not hold a user session, and a leaked ingest token can only
+    /// write candles — it cannot read trades. Empty disables `/ingest/*`.
+    pub ingest_token: String,
 }
 
 impl Config {
@@ -31,6 +37,7 @@ impl Config {
                 .parse()
                 .context("JWT_TTL_HOURS must be an integer")?,
             cors_allowed_origins: env_or("CORS_ALLOWED_ORIGINS", "*"),
+            ingest_token: env_or("INGEST_TOKEN", ""),
         })
     }
 }

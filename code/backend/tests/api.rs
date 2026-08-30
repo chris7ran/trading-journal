@@ -18,6 +18,7 @@ use trading_journal_api::routes::build_router;
 use trading_journal_api::state::AppState;
 
 const TEST_PASSWORD: &str = "correct horse battery staple";
+const TEST_INGEST_TOKEN: &str = "test-ingest-token";
 
 async fn test_app() -> axum::Router {
     let options = SqliteConnectOptions::from_str("sqlite::memory:")
@@ -44,6 +45,7 @@ async fn test_app() -> axum::Router {
         bind_addr: "127.0.0.1:0".into(),
         jwt_ttl_hours: 1,
         cors_allowed_origins: "*".into(),
+        ingest_token: TEST_INGEST_TOKEN.into(),
     };
 
     build_router(AppState::new(pool, config))
@@ -568,4 +570,213 @@ async fn trade_stats_handles_wins_only() {
     assert_eq!(s["losses"], 0);
     assert_eq!(s["gross_loss"], 0.0);
     assert!(s["profit_factor"].is_null()); // no losses -> undefined
+}
+
+// --- Candle ingestion + daily levels ----------------------------------------
+
+fn ingest_request(token: Option<&str>, body: Value) -> Request<Body> {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri("/ingest/candles")
+        .header("content-type", "application/json");
+    if let Some(t) = token {
+        builder = builder.header("x-ingest-token", t);
+    }
+    builder.body(Body::from(body.to_string())).unwrap()
+}
+
+/// Three M5 candles inside the London opening range of 15 July 2026.
+/// London is on BST that day, so 08:00 local is 07:00 UTC.
+fn london_orb_batch() -> Value {
+    json!({
+        "symbol": "GER40",
+        "timeframe": "M5",
+        "candles": [
+            { "t": "2026-07-15T07:00:00Z", "o": 100.0, "h": 103.0, "l": 99.0,  "c": 102.0, "v": 10.0 },
+            { "t": "2026-07-15T07:05:00Z", "o": 102.0, "h": 105.0, "l": 101.0, "c": 104.0, "v": 12.0 },
+            { "t": "2026-07-15T07:10:00Z", "o": 104.0, "h": 104.5, "l": 100.0, "c": 101.0, "v": 9.0  }
+        ]
+    })
+}
+
+#[tokio::test]
+async fn ingest_rejects_a_missing_or_wrong_token() {
+    let app = test_app().await;
+
+    let res = app
+        .clone()
+        .oneshot(ingest_request(None, london_orb_batch()))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+
+    let res = app
+        .clone()
+        .oneshot(ingest_request(Some("not-the-token"), london_orb_batch()))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn ingest_does_not_accept_the_user_jwt_as_an_ingest_token() {
+    // The two credentials are deliberately separate; a JWT must not open the
+    // machine write path, and vice versa.
+    let app = test_app().await;
+    let jwt = login(&app).await;
+    let res = app
+        .clone()
+        .oneshot(ingest_request(Some(&jwt), london_orb_batch()))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn ingest_is_idempotent_so_the_ea_can_safely_replay() {
+    let app = test_app().await;
+
+    for _ in 0..3 {
+        let res = app
+            .clone()
+            .oneshot(ingest_request(Some(TEST_INGEST_TOKEN), london_orb_batch()))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_json(res).await;
+        assert_eq!(body["symbol"], "GER40");
+        assert_eq!(body["stored"], 3);
+    }
+
+    // Three replays, still three candles.
+    let req = Request::builder()
+        .uri("/ingest/status")
+        .header("x-ingest-token", TEST_INGEST_TOKEN)
+        .body(Body::empty())
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_json(res).await;
+    assert_eq!(body["symbols"][0]["symbol"], "GER40");
+    assert_eq!(body["symbols"][0]["count"], 3);
+}
+
+#[tokio::test]
+async fn ingest_rejects_an_impossible_candle() {
+    let app = test_app().await;
+    let bad = json!({
+        "symbol": "GER40",
+        "candles": [
+            { "t": "2026-07-15T07:00:00Z", "o": 100.0, "h": 98.0, "l": 99.0, "c": 99.0 }
+        ]
+    });
+    let res = app
+        .clone()
+        .oneshot(ingest_request(Some(TEST_INGEST_TOKEN), bad))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn ingest_rejects_timestamps_from_the_future() {
+    // The single most likely EA bug: sending broker server time (often UTC+2 or
+    // UTC+3) instead of UTC. Better to fail loudly than to file candles into
+    // the wrong session for months.
+    let app = test_app().await;
+    let future = (chrono::Utc::now() + chrono::Duration::hours(3))
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
+    let bad = json!({
+        "symbol": "GER40",
+        "candles": [{ "t": future, "o": 100.0, "h": 101.0, "l": 99.0, "c": 100.0 }]
+    });
+    let res = app
+        .clone()
+        .oneshot(ingest_request(Some(TEST_INGEST_TOKEN), bad))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn levels_require_auth() {
+    let app = test_app().await;
+    let req = Request::builder()
+        .uri("/levels?symbol=GER40")
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        app.oneshot(req).await.unwrap().status(),
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn ingested_candles_become_the_london_opening_range() {
+    let app = test_app().await;
+    let token = login(&app).await;
+
+    let res = app
+        .clone()
+        .oneshot(ingest_request(Some(TEST_INGEST_TOKEN), london_orb_batch()))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let req = Request::builder()
+        .uri("/levels?symbol=ger40&date=2026-07-15")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_json(res).await;
+
+    assert_eq!(body["symbol"], "GER40"); // lowercase query normalised
+    assert_eq!(body["day"]["high"], 105.0);
+    assert_eq!(body["day"]["low"], 99.0);
+
+    let orb = body["opening_ranges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["key"] == "orb_london")
+        .unwrap()
+        .clone();
+    assert_eq!(orb["bars"], 3);
+    assert_eq!(orb["high"], 105.0);
+    assert_eq!(orb["low"], 99.0);
+    assert_eq!(orb["range"], 6.0);
+}
+
+#[tokio::test]
+async fn levels_for_a_day_without_data_are_empty_not_an_error() {
+    let app = test_app().await;
+    let token = login(&app).await;
+    let req = Request::builder()
+        .uri("/levels?symbol=GER40&date=2026-07-15")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_json(res).await;
+    assert!(body["day"].is_null());
+    assert_eq!(body["sessions"].as_array().unwrap().len(), 4);
+}
+
+#[tokio::test]
+async fn levels_reject_a_malformed_date() {
+    let app = test_app().await;
+    let token = login(&app).await;
+    let req = Request::builder()
+        .uri("/levels?symbol=GER40&date=15-07-2026")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        app.oneshot(req).await.unwrap().status(),
+        StatusCode::BAD_REQUEST
+    );
 }
