@@ -20,7 +20,15 @@ import {
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 
-import type { DailyBrief, LevelSymbol, LevelWindow, RangeStats, TrendRead } from '../api/types';
+import type {
+  BiasRead,
+  DailyBias,
+  DailyBrief,
+  LevelSymbol,
+  LevelWindow,
+  RangeStats,
+  WeeklyProfile,
+} from '../api/types';
 import { ApiError } from '../api/client';
 import { useApi } from '../hooks/useApi';
 import { useAuth } from '../auth/AuthContext';
@@ -202,12 +210,19 @@ export default function LevelsScreen() {
       ) : (
         <>
           {/* Context: is this move already big? */}
-          {brief ? <ContextCard stats={brief.stats} trend={brief.trend} decimals={decimals} /> : null}
+          {brief ? (
+            <ContextCard
+              stats={brief.stats}
+              bias={brief.bias}
+              weekly={brief.weekly}
+              decimals={decimals}
+            />
+          ) : null}
 
           {/* Day range hero */}
           {levels?.day ? (
             <View style={[styles.card, glow(neon.cyan, 16, 0.18)]}>
-              <Text style={styles.lbl}>Amplitude du jour</Text>
+              <Text style={styles.lbl}>Extrêmes du jour</Text>
               <Text style={styles.hero}>{formatPoints(levels.day.range, decimals)} pts</Text>
               <View style={styles.heroRow}>
                 <View>
@@ -318,29 +333,94 @@ export default function LevelsScreen() {
 }
 
 /**
- * The question the screen exists to answer first: has the move already
- * happened?
+ * Two questions, in the order they get asked in the morning.
  *
- * A range in points is meaningless without a yardstick — 250 points is a quiet
- * day on one instrument and an outlier on another. Everything here is a
- * percentage of that instrument's own average daily range, with 100% marked on
- * the bar so the comparison is visual rather than arithmetic.
+ * First the bias: where does price sit against the midpoint of yesterday's
+ * range? Second the guardrail: has the move already happened? A range in points
+ * is meaningless without a yardstick — 250 points is a quiet day on one
+ * instrument and an outlier on another — so everything is a percentage of that
+ * instrument's own average daily range, with 100% marked on the bar.
  */
 function ContextCard({
   stats,
-  trend,
+  bias,
+  weekly,
   decimals,
 }: {
   stats: RangeStats;
-  trend: TrendRead;
+  bias: DailyBias;
+  weekly: WeeklyProfile;
   decimals: number;
 }) {
+  return (
+    <>
+      <BiasCard bias={bias} decimals={decimals} />
+      <AdrCard stats={stats} decimals={decimals} />
+      <WeeklyCard weekly={weekly} decimals={decimals} />
+    </>
+  );
+}
+
+function BiasCard({ bias, decimals }: { bias: DailyBias; decimals: number }) {
+  if (bias.previous_mid === null) {
+    return (
+      <View style={styles.card}>
+        <Text style={styles.lbl}>Biais daily</Text>
+        <Text style={styles.emptyBody}>
+          Pas de séance précédente exploitable pour cette date, donc pas de 0,5 de référence.
+        </Text>
+      </View>
+    );
+  }
+
+  const colour = biasColour(bias.read);
+
+  return (
+    <View style={[styles.card, glow(colour, 16, 0.2)]}>
+      <Text style={styles.lbl}>Biais daily · 0,5 de la veille</Text>
+      <Text style={styles.biasMid}>{formatPrice(bias.previous_mid, decimals)}</Text>
+
+      <Text style={[styles.biasRead, { color: colour }]}>{biasLabel(bias.read)}</Text>
+
+      {/* The one fact available before the session. Marked as such, because
+          everything below it is hindsight and must not be read as a forecast. */}
+      {bias.open_above_mid !== null ? (
+        <View style={styles.biasOpenRow}>
+          <View style={[styles.tick, { backgroundColor: colour, height: 16 }]} />
+          <Text style={styles.biasOpenText}>
+            Ouverture {bias.open_above_mid ? 'au-dessus' : 'en dessous'} du 0,5
+            <Text style={styles.biasOpenHint}> · connu avant la séance</Text>
+          </Text>
+        </View>
+      ) : null}
+
+      <View style={styles.contextDivider} />
+
+      <View style={styles.flagGrid}>
+        <Flag label="Bas tenu > 0,5" value={bias.held_above_mid} />
+        <Flag label="Clôture > 0,5" value={bias.closed_above_mid} />
+        <Flag label="PDH pris" value={bias.touched_pdh} />
+        <Flag label="PDL pris" value={bias.touched_pdl} />
+      </View>
+
+      {bias.first_taken ? (
+        <Text style={styles.contextMeta}>Premier extrême atteint : {bias.first_taken}</Text>
+      ) : null}
+      <Text style={styles.biasFootnote}>
+        Ces quatre marqueurs se constatent à la clôture. Ils servent au débrief, pas à décider le
+        matin.
+      </Text>
+    </View>
+  );
+}
+
+function AdrCard({ stats, decimals }: { stats: RangeStats; decimals: number }) {
   // Under five completed sessions the backend withholds the averages rather
   // than computing a misleading one, so there is nothing to show.
   if (stats.adr === null || stats.day_pct_of_adr === null) {
     return (
       <View style={styles.card}>
-        <Text style={styles.lbl}>Contexte</Text>
+        <Text style={styles.lbl}>Amplitude du jour</Text>
         <Text style={styles.emptyBody}>
           Pas encore assez d'historique pour calculer l'ADR ({stats.sessions} séance
           {stats.sessions > 1 ? 's' : ''} sur les 5 minimum). Laisse l'EA tourner quelques jours.
@@ -371,29 +451,62 @@ function ContextCard({
       <View style={styles.contextDivider} />
 
       <View style={styles.contextRow}>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.lbl}>Tendance daily</Text>
-          <Text style={[styles.trendValue, { color: trendColour(trend.direction) }]}>
-            {trendLabel(trend.direction)}
-          </Text>
-          {trend.net_move_in_adr !== null ? (
-            <Text style={styles.contextMeta}>
-              {Math.abs(trend.net_move_in_adr).toFixed(1)} journée
-              {Math.abs(trend.net_move_in_adr) >= 2 ? 's' : ''} moyenne
-              {Math.abs(trend.net_move_in_adr) >= 2 ? 's' : ''} sur {trend.sessions} séances
-            </Text>
-          ) : null}
-          <Text style={styles.contextMeta}>
-            {trend.higher_highs_5} plus haut{trend.higher_highs_5 > 1 ? 's' : ''} ·{' '}
-            {trend.lower_lows_5} plus bas sur 5
-          </Text>
-        </View>
+        <MiniStat label="Veille" pct={stats.previous_day_pct_of_adr} suffix="d'ADR" align="flex-start" />
+        <MiniStat label="Range Asie" pct={stats.asia_pct_of_median} suffix="de sa médiane" />
+      </View>
+    </View>
+  );
+}
 
-        <View style={styles.contextSplit}>
-          <MiniStat label="Veille" pct={stats.previous_day_pct_of_adr} suffix="d'ADR" />
-          <MiniStat label="Range Asie" pct={stats.asia_pct_of_median} suffix="de sa médiane" />
+function WeeklyCard({ weekly, decimals }: { weekly: WeeklyProfile; decimals: number }) {
+  if (!weekly.high_weekday || !weekly.low_weekday) {
+    return null;
+  }
+  return (
+    <View style={styles.card}>
+      <Text style={styles.lbl}>
+        Semaine en cours · {weekly.sessions} séance{weekly.sessions > 1 ? 's' : ''} · on est{' '}
+        {weekly.today_weekday}
+      </Text>
+
+      <View style={styles.weekRow}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.weekDay}>{weekly.high_weekday}</Text>
+          <Text style={[styles.weekValue, { color: neon.green }]}>
+            {formatPrice(weekly.high ?? 0, decimals)}
+          </Text>
+          <Text style={styles.miniSuffix}>haut de la semaine</Text>
+        </View>
+        <View style={{ flex: 1, alignItems: 'flex-end' }}>
+          <Text style={styles.weekDay}>{weekly.low_weekday}</Text>
+          <Text style={[styles.weekValue, { color: neon.red }]}>
+            {formatPrice(weekly.low ?? 0, decimals)}
+          </Text>
+          <Text style={styles.miniSuffix}>bas de la semaine</Text>
         </View>
       </View>
+
+      {weekly.range !== null ? (
+        <Text style={styles.adrDetail}>
+          Amplitude {formatPrice(weekly.range, decimals)} pts
+          {weekly.range_pct_of_adr !== null
+            ? ` · ${Math.round(weekly.range_pct_of_adr)} % d'une journée moyenne`
+            : ''}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+/** A yes/no marker. Grey when the backend could not establish it. */
+function Flag({ label, value }: { label: string; value: boolean | null }) {
+  const colour = value === null ? neon.muted : value ? neon.green : neon.muted;
+  return (
+    <View style={styles.flag}>
+      <Text style={[styles.flagMark, { color: colour }]}>
+        {value === null ? '—' : value ? '✓' : '·'}
+      </Text>
+      <Text style={styles.flagLabel}>{label}</Text>
     </View>
   );
 }
@@ -401,7 +514,7 @@ function ContextCard({
 /** Horizontal bar with a tick at 100%, clamped so an outlier stays readable. */
 function AdrBar({ pct, colour }: { pct: number; colour: string }) {
   const CAP = 200; // beyond twice the average the exact width stops mattering
-  const width = Math.max(2, Math.min(pct, CAP) / CAP * 100);
+  const width = Math.max(2, (Math.min(pct, CAP) / CAP) * 100);
 
   return (
     <View style={styles.barTrack}>
@@ -416,13 +529,15 @@ function MiniStat({
   label,
   pct,
   suffix,
+  align = 'flex-end',
 }: {
   label: string;
   pct: number | null;
   suffix: string;
+  align?: 'flex-start' | 'flex-end';
 }) {
   return (
-    <View style={{ alignItems: 'flex-end' }}>
+    <View style={{ alignItems: align, flex: 1 }}>
       <Text style={styles.lbl}>{label}</Text>
       <Text style={[styles.miniValue, { color: pct === null ? neon.muted : adrColour(pct) }]}>
         {pct === null ? '—' : `${Math.round(pct)} %`}
@@ -442,26 +557,32 @@ function adrColour(pct: number): string {
   return neon.violet; // notably wide
 }
 
-function trendLabel(direction: TrendRead['direction']): string {
-  switch (direction) {
-    case 'up':
-      return 'Haussière';
-    case 'down':
-      return 'Baissière';
-    case 'range':
-      return 'Range';
+function biasLabel(read: BiasRead): string {
+  switch (read) {
+    case 'continuation_haussiere':
+      return 'Continuation haussière';
+    case 'continuation_baissiere':
+      return 'Continuation baissière';
+    case 'reversal_depuis_le_haut':
+      return 'Reversal depuis le haut';
+    case 'reversal_depuis_le_bas':
+      return 'Reversal depuis le bas';
+    case 'zero_cinq_traverse':
+      return '0,5 traversé dans les deux sens';
     default:
-      return 'Indéterminée';
+      return 'Indéterminé';
   }
 }
 
-function trendColour(direction: TrendRead['direction']): string {
-  switch (direction) {
-    case 'up':
+function biasColour(read: BiasRead): string {
+  switch (read) {
+    case 'continuation_haussiere':
+    case 'reversal_depuis_le_bas':
       return neon.green;
-    case 'down':
+    case 'continuation_baissiere':
+    case 'reversal_depuis_le_haut':
       return neon.red;
-    case 'range':
+    case 'zero_cinq_traverse':
       return neon.cyan;
     default:
       return neon.muted;
@@ -642,6 +763,22 @@ const styles = StyleSheet.create({
   sessionName: { color: neon.text, fontSize: 13, fontWeight: '600' },
   sessionRange: { color: neon.cyan, fontSize: 17, fontWeight: '700', marginTop: 4 },
   sessionMeta: { color: neon.muted, fontSize: 11, marginTop: 3 },
+
+  biasMid: { color: neon.text, fontSize: 30, fontWeight: '800', marginTop: 2 },
+  biasRead: { fontSize: 16, fontWeight: '700', marginTop: 4 },
+  biasOpenRow: { flexDirection: 'row', alignItems: 'center', marginTop: 10 },
+  biasOpenText: { color: neon.text, fontSize: 13, flex: 1 },
+  biasOpenHint: { color: neon.muted, fontSize: 11 },
+  biasFootnote: { color: neon.muted, fontSize: 10, lineHeight: 14, marginTop: 8 },
+
+  flagGrid: { flexDirection: 'row', flexWrap: 'wrap' },
+  flag: { width: '50%', flexDirection: 'row', alignItems: 'center', paddingVertical: 4 },
+  flagMark: { fontSize: 14, fontWeight: '700', width: 18 },
+  flagLabel: { color: neon.muted, fontSize: 12, flexShrink: 1 },
+
+  weekRow: { flexDirection: 'row', marginTop: 10 },
+  weekDay: { color: neon.muted, fontSize: 11, textTransform: 'capitalize' },
+  weekValue: { fontSize: 18, fontWeight: '700', marginTop: 2 },
 
   adrRow: { flexDirection: 'row', alignItems: 'baseline', gap: 8, marginTop: 2 },
   adrValue: { fontSize: 34, fontWeight: '800' },

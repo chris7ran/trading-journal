@@ -875,16 +875,43 @@ async fn brief_measures_the_day_against_the_average_daily_range() {
 }
 
 #[tokio::test]
-async fn brief_reports_a_flat_market_as_a_range_not_a_trend() {
+async fn brief_reads_the_session_against_the_previous_midpoint() {
     let app = test_app().await;
     let token = login(&app).await;
     seed_candles(&app, quiet_then_violent("US30")).await;
 
     let body = get_brief(&app, &token, "US30", "2026-07-30").await;
 
-    // Every session closed at the same price: no net travel at all.
-    assert_eq!(body["trend"]["direction"], "range");
-    assert_eq!(body["trend"]["net_move"], 0.0);
+    // Previous session ran 1000 -> 1100, so the 0.5 sits at 1050. Today opened
+    // at 1000 and its high reached 1500, taking the previous high on the way.
+    assert_eq!(body["bias"]["previous_mid"], 1050.0);
+    assert_eq!(body["bias"]["open_above_mid"], false);
+    assert_eq!(body["bias"]["touched_pdh"], true);
+    assert_eq!(body["bias"]["first_taken"], "PDH");
+
+    // Closing back under the midpoint after taking the previous high is the
+    // reversal signature, and it outranks where the session opened.
+    assert_eq!(body["bias"]["read"], "reversal_depuis_le_haut");
+
+    // The midpoint is also offered as a level to mark on the chart.
+    let distances = body["distances"].as_array().unwrap();
+    assert!(distances.iter().any(|d| d["key"] == "previous_mid"));
+}
+
+#[tokio::test]
+async fn brief_reports_which_weekday_made_the_week_extremes() {
+    let app = test_app().await;
+    let token = login(&app).await;
+    seed_candles(&app, quiet_then_violent("NAS100")).await;
+
+    // 2026-07-30 is a Thursday; the week opened on Monday 2026-07-27.
+    let body = get_brief(&app, &token, "NAS100", "2026-07-30").await;
+
+    assert_eq!(body["weekly"]["today_weekday"], "jeudi");
+    assert_eq!(body["weekly"]["week_start"], "2026-07-27");
+    // Thursday is the 500-point session, so it holds the weekly high.
+    assert_eq!(body["weekly"]["high_weekday"], "jeudi");
+    assert_eq!(body["weekly"]["high"], 1500.0);
 }
 
 #[tokio::test]
@@ -900,7 +927,7 @@ async fn brief_stays_silent_rather_than_averaging_three_sessions() {
     let body = get_brief(&app, &token, "XAUUSD", "2026-07-30").await;
 
     assert!(body["stats"]["adr"].is_null(), "no ADR on a single session");
-    assert_eq!(body["trend"]["direction"], "unknown");
+    assert_eq!(body["bias"]["read"], "indetermine");
 }
 
 #[tokio::test]

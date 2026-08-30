@@ -183,6 +183,16 @@ export function buildLadder(levels: DailyLevels): LadderRow[] {
   if (levels.previous_day) {
     push('pdh', 'PDH — haut de la veille', levels.previous_day.high, 'previous', 'high', true);
     push('pdl', 'PDL — bas de la veille', levels.previous_day.low, 'previous', 'low', true);
+    // The midpoint of yesterday's range: the level the daily bias is read
+    // against, so it belongs on the ladder next to the extremes it sits between.
+    push(
+      'previous_mid',
+      '0,5 de la veille',
+      (levels.previous_day.high + levels.previous_day.low) / 2,
+      'previous',
+      'high',
+      true,
+    );
   }
 
   for (const orb of levels.opening_ranges) {
