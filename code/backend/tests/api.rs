@@ -780,3 +780,140 @@ async fn levels_reject_a_malformed_date() {
         StatusCode::BAD_REQUEST
     );
 }
+
+// --- Morning brief ----------------------------------------------------------
+
+/// One session's worth of M5 candles, 08:00 UTC onwards so it lands squarely
+/// inside the Paris calendar day. The whole range is made by the first candle,
+/// which keeps the arithmetic in the assertions exact.
+fn session_batch(symbol: &str, day: &str, high: f64, low: f64) -> Value {
+    let candles: Vec<Value> = (0..12)
+        .map(|i| {
+            let h = if i == 0 { high } else { low + 0.5 };
+            json!({
+                "t": format!("{day}T08:{:02}:00Z", i * 5),
+                "o": low,
+                "h": h,
+                "l": low,
+                "c": low + 0.5
+            })
+        })
+        .collect();
+    json!({ "symbol": symbol, "timeframe": "M5", "candles": candles })
+}
+
+async fn seed_candles(app: &axum::Router, batches: Vec<Value>) {
+    for batch in batches {
+        let res = app
+            .clone()
+            .oneshot(ingest_request(Some(TEST_INGEST_TOKEN), batch))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+}
+
+/// Ten quiet 100-point sessions (20–29 July), then a 500-point day (30 July).
+fn quiet_then_violent(symbol: &str) -> Vec<Value> {
+    let mut batches: Vec<Value> = (20..=29)
+        .map(|day| session_batch(symbol, &format!("2026-07-{day:02}"), 1100.0, 1000.0))
+        .collect();
+    batches.push(session_batch(symbol, "2026-07-30", 1500.0, 1000.0));
+    batches
+}
+
+async fn get_brief(app: &axum::Router, token: &str, symbol: &str, date: &str) -> Value {
+    let req = Request::builder()
+        .uri(format!("/brief?symbol={symbol}&date={date}"))
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    body_json(res).await
+}
+
+#[tokio::test]
+async fn brief_requires_auth() {
+    let app = test_app().await;
+    let req = Request::builder()
+        .uri("/brief?symbol=GER40")
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        app.oneshot(req).await.unwrap().status(),
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn brief_measures_the_day_against_the_average_daily_range() {
+    let app = test_app().await;
+    let token = login(&app).await;
+    seed_candles(&app, quiet_then_violent("GER40")).await;
+
+    let body = get_brief(&app, &token, "GER40", "2026-07-30").await;
+
+    // Ten completed 100-point sessions -> ADR 100, so today's 500-point range
+    // reads as 500% of it. Had today leaked into its own average it would show
+    // roughly 145% — which is the whole reason the average excludes it.
+    assert_eq!(body["stats"]["sessions"], 10);
+    assert_eq!(body["stats"]["adr"], 100.0);
+    assert_eq!(body["stats"]["adr_median"], 100.0);
+    assert_eq!(body["stats"]["day_range"], 500.0);
+    assert_eq!(body["stats"]["day_pct_of_adr"], 500.0);
+
+    // The previous session was an ordinary day.
+    assert_eq!(body["stats"]["previous_day_pct_of_adr"], 100.0);
+
+    // Levels ride along, so the screen needs a single request.
+    assert_eq!(body["levels"]["day"]["high"], 1500.0);
+
+    // And it says so in words, without telling the reader what to do.
+    let observations = body["observations"].as_array().unwrap();
+    assert!(observations.iter().any(|o| o["key"] == "day_range"));
+}
+
+#[tokio::test]
+async fn brief_reports_a_flat_market_as_a_range_not_a_trend() {
+    let app = test_app().await;
+    let token = login(&app).await;
+    seed_candles(&app, quiet_then_violent("US30")).await;
+
+    let body = get_brief(&app, &token, "US30", "2026-07-30").await;
+
+    // Every session closed at the same price: no net travel at all.
+    assert_eq!(body["trend"]["direction"], "range");
+    assert_eq!(body["trend"]["net_move"], 0.0);
+}
+
+#[tokio::test]
+async fn brief_stays_silent_rather_than_averaging_three_sessions() {
+    let app = test_app().await;
+    let token = login(&app).await;
+    seed_candles(
+        &app,
+        vec![session_batch("XAUUSD", "2026-07-29", 1100.0, 1000.0)],
+    )
+    .await;
+
+    let body = get_brief(&app, &token, "XAUUSD", "2026-07-30").await;
+
+    assert!(body["stats"]["adr"].is_null(), "no ADR on a single session");
+    assert_eq!(body["trend"]["direction"], "unknown");
+}
+
+#[tokio::test]
+async fn brief_rejects_a_malformed_date() {
+    let app = test_app().await;
+    let token = login(&app).await;
+    let req = Request::builder()
+        .uri("/brief?symbol=GER40&date=30-07-2026")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        app.oneshot(req).await.unwrap().status(),
+        StatusCode::BAD_REQUEST
+    );
+}

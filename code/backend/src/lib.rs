@@ -4,6 +4,7 @@
 //! integration tests in `tests/` drive the router in-process.
 
 pub mod auth;
+pub mod brief;
 pub mod config;
 pub mod csv_import;
 pub mod db;

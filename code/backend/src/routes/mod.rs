@@ -77,6 +77,7 @@ pub fn build_router(state: AppState) -> Router {
         // Static segment before any future `/levels/:something` param route.
         .route("/levels/symbols", get(levels::list_symbols))
         .route("/levels", get(levels::get_levels))
+        .route("/brief", get(levels::get_brief))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth_middleware::require_auth,

@@ -9,9 +9,10 @@
 use axum::extract::{Query, State};
 use axum::Json;
 use chrono::{NaiveDate, Utc};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::brief::{self, Brief};
 use crate::error::{AppError, AppResult};
 use crate::levels::{self, Candle, DailyLevels, DAY_TZ};
 use crate::state::AppState;
@@ -33,15 +34,59 @@ pub async fn get_levels(
         return Err(AppError::BadRequest("symbol is required".into()));
     }
 
-    let date = match query.date.as_deref() {
-        Some(raw) => raw
-            .parse::<NaiveDate>()
-            .map_err(|_| AppError::BadRequest(format!("invalid date '{raw}', expected YYYY-MM-DD")))?,
-        None => Utc::now().with_timezone(&DAY_TZ).date_naive(),
-    };
+    let date = parse_date(query.date.as_deref())?;
+    let (from, to) = levels::utc_bounds_for_query(date);
+    let candles = fetch_candles(&state, &symbol, from, to).await?;
 
-    let candles = fetch_candles(&state, &symbol, date).await?;
     Ok(Json(levels::compute(&symbol, date, &candles)))
+}
+
+/// `GET /brief?symbol=GER40&date=2026-08-28`
+///
+/// The levels plus the context that makes them mean something: average daily
+/// range, where today sits against it, the daily trend, and how far the untaken
+/// levels are in average-day terms.
+///
+/// Loads a wider slice of history than `/levels` — the averages are the point.
+pub async fn get_brief(
+    State(state): State<AppState>,
+    Query(query): Query<LevelsQuery>,
+) -> AppResult<Json<BriefResponse>> {
+    let symbol = query.symbol.trim().to_uppercase();
+    if symbol.is_empty() {
+        return Err(AppError::BadRequest("symbol is required".into()));
+    }
+
+    let date = parse_date(query.date.as_deref())?;
+    let (from, to) = levels::utc_bounds_for_history(date, brief::HISTORY_DAYS);
+    let candles = fetch_candles(&state, &symbol, from, to).await?;
+
+    let daily = levels::compute(&symbol, date, &candles);
+    let brief = brief::build(&symbol, date, &candles, &daily);
+
+    Ok(Json(BriefResponse {
+        brief,
+        levels: daily,
+    }))
+}
+
+/// Levels and brief travel together: the app renders them on one screen, and
+/// a second round trip would let the two drift apart if the feed advanced in
+/// between.
+#[derive(Debug, Serialize)]
+pub struct BriefResponse {
+    #[serde(flatten)]
+    pub brief: Brief,
+    pub levels: DailyLevels,
+}
+
+fn parse_date(raw: Option<&str>) -> AppResult<NaiveDate> {
+    match raw {
+        Some(value) => value.parse::<NaiveDate>().map_err(|_| {
+            AppError::BadRequest(format!("invalid date '{value}', expected YYYY-MM-DD"))
+        }),
+        None => Ok(Utc::now().with_timezone(&DAY_TZ).date_naive()),
+    }
 }
 
 /// `GET /levels/symbols` — what the EA has actually delivered so far.
@@ -75,10 +120,9 @@ pub async fn list_symbols(State(state): State<AppState>) -> AppResult<Json<Value
 async fn fetch_candles(
     state: &AppState,
     symbol: &str,
-    date: NaiveDate,
+    from: chrono::DateTime<Utc>,
+    to: chrono::DateTime<Utc>,
 ) -> AppResult<Vec<Candle>> {
-    let (from, to) = levels::utc_bounds_for_query(date);
-
     // Timestamps are stored in a fixed `%Y-%m-%dT%H:%M:%SZ` shape, so string
     // comparison is chronological and the primary key range-scans directly.
     let rows: Vec<(String, f64, f64, f64, f64)> = sqlx::query_as(
