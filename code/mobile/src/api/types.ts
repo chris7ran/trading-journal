@@ -224,3 +224,63 @@ export interface TradeFilters {
   limit?: number;
   offset?: number;
 }
+
+// --- Daily levels (GET /levels) ---------------------------------------------
+
+/** Aggregated OHLC over a window. `range` is high - low, in price units. */
+export interface Ohlc {
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  range: number;
+  bars: number;
+  high_at: string; // ISO UTC
+  low_at: string; // ISO UTC
+}
+
+/**
+ * A named session or opening range. The OHLC fields are flattened by the API
+ * and are **absent** when the market was closed or no candle was received —
+ * hence `Partial`.
+ */
+export interface LevelWindow extends Partial<Ohlc> {
+  key: string;
+  label: string;
+  timezone: string;
+  start: string; // ISO UTC
+  end: string; // ISO UTC
+}
+
+export interface PreviousDay extends Ohlc {
+  date: string; // YYYY-MM-DD
+}
+
+/** "Did price take out this level during that window, and when?" */
+export interface Sweep {
+  key: string;
+  label: string;
+  level: number;
+  swept: boolean;
+  at: string | null; // ISO UTC, first breach
+  excursion: number; // how far beyond the level, in price units
+}
+
+export interface DailyLevels {
+  symbol: string;
+  date: string; // YYYY-MM-DD, Paris calendar day
+  timezone: string;
+  day: Ohlc | null;
+  previous_day: PreviousDay | null;
+  sessions: LevelWindow[];
+  opening_ranges: LevelWindow[];
+  sweeps: Sweep[];
+}
+
+/** One entry of GET /levels/symbols — what the MT5 feed has delivered. */
+export interface LevelSymbol {
+  symbol: string;
+  count: number;
+  first: string; // ISO UTC
+  last: string; // ISO UTC
+}

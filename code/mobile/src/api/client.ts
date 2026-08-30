@@ -7,9 +7,11 @@
 import type {
   Account,
   CotEntry,
+  DailyLevels,
   EcoEvent,
   EconIndicator,
   ImportSummary,
+  LevelSymbol,
   LoginResponse,
   NewAccount,
   NewsItem,
@@ -167,6 +169,19 @@ export function createApi(baseUrl: string, token?: string | null) {
 
     /** Weekly CFTC CoT positioning (leveraged funds) per tracked contract. */
     getCot: () => request<CotEntry[]>('/macro/cot'),
+
+    /**
+     * Daily levels for one symbol. `date` is a Paris calendar day
+     * (`YYYY-MM-DD`); omit it for today.
+     */
+    getLevels: (symbol: string, date?: string) =>
+      request<DailyLevels>(
+        `/levels?symbol=${encodeURIComponent(symbol)}${date ? `&date=${encodeURIComponent(date)}` : ''}`,
+      ),
+
+    /** Symbols the MT5 feed has actually delivered — drives the picker. */
+    getLevelSymbols: () =>
+      request<{ symbols: LevelSymbol[] }>('/levels/symbols').then((r) => r.symbols ?? []),
 
     /** List trading setups / patterns. */
     listSetups: () => request<Setup[]>('/setups'),

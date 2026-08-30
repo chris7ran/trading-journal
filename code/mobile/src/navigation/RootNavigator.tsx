@@ -13,6 +13,7 @@ import { HeaderBar } from '../components/AppHeader';
 import LoginScreen from '../screens/LoginScreen';
 import LockScreen from '../screens/LockScreen';
 import DashboardScreen from '../screens/DashboardScreen';
+import LevelsScreen from '../screens/LevelsScreen';
 import TradesScreen from '../screens/TradesScreen';
 import TradeDetailScreen from '../screens/TradeDetailScreen';
 import TradeFormScreen from '../screens/TradeFormScreen';
@@ -91,6 +92,7 @@ function SetupsStack() {
 
 const TAB_ICONS: Record<string, keyof typeof Ionicons.glyphMap> = {
   Dashboard: 'speedometer-outline',
+  Niveaux: 'git-commit-outline',
   Journal: 'list-outline',
   Setups: 'construct-outline',
   'Éco': 'earth-outline',
@@ -117,6 +119,11 @@ function MainTabs() {
         name="Dashboard"
         component={DashboardScreen}
         options={{ headerShown: true, header: () => <HeaderBar title="Dashboard" /> }}
+      />
+      <Tabs.Screen
+        name="Niveaux"
+        component={LevelsScreen}
+        options={{ headerShown: true, header: () => <HeaderBar title="Niveaux du jour" /> }}
       />
       <Tabs.Screen name="Journal" component={JournalStack} />
       <Tabs.Screen name="Setups" component={SetupsStack} />
