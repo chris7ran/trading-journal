@@ -230,6 +230,64 @@ pub fn utc_bounds_for_query(date: NaiveDate) -> (DateTime<Utc>, DateTime<Utc>) {
     )
 }
 
+/// UTC range covering `calendar_days` before `date`, for statistics that need
+/// history (ADR, medians, trend).
+pub fn utc_bounds_for_history(date: NaiveDate, calendar_days: i64) -> (DateTime<Utc>, DateTime<Utc>) {
+    let (start, end) = local_window(date, DAY_TZ, (0, 0), (24, 0));
+    (start - Duration::days(calendar_days), end + Duration::hours(6))
+}
+
+/// Daily OHLC for the `wanted` most recent trading days ending at `last`
+/// (inclusive), oldest first.
+///
+/// Days without a real session are skipped using the same bar-count floor as
+/// [`find_previous_day`], so weekends, holidays and the Sunday-evening reopen
+/// never enter an average.
+pub fn daily_series(candles: &[Candle], last: NaiveDate, wanted: usize) -> Vec<(NaiveDate, Ohlc)> {
+    let mut out = Vec::with_capacity(wanted);
+
+    // Scan back generously: 20 trading days span about 28 calendar days once
+    // weekends are removed, plus room for a holiday run.
+    let horizon = (wanted as i64) * 2 + 10;
+
+    for back in 0..horizon {
+        if out.len() == wanted {
+            break;
+        }
+        let day = last - Duration::days(back);
+        let (start, end) = local_window(day, DAY_TZ, (0, 0), (24, 0));
+        if let Some(ohlc) = aggregate(candles, start, end) {
+            if ohlc.bars >= MIN_BARS_FOR_A_TRADING_DAY {
+                out.push((day, ohlc));
+            }
+        }
+    }
+
+    out.reverse(); // oldest first
+    out
+}
+
+/// The UTC window of a named session or opening range on `date`.
+///
+/// Lets callers outside this module rebuild one window across many days —
+/// for instance to compare today's Asian range with its own recent median.
+pub fn window_bounds(key: &str, date: NaiveDate) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
+    SESSIONS
+        .iter()
+        .chain(OPENING_RANGES.iter())
+        .find(|spec| spec.key == key)
+        .map(|spec| local_window(date, spec.tz, spec.from, spec.to))
+}
+
+/// Aggregate an arbitrary UTC window. See [`compute`] for the sort precondition.
+pub fn aggregate_window(
+    candles: &[Candle],
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+) -> Option<Ohlc> {
+    aggregate(candles, start, end)
+}
+
 // --- Internals --------------------------------------------------------------
 
 fn resolve(spec: &WindowSpec, date: NaiveDate, candles: &[Candle]) -> Window {
