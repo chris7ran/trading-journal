@@ -7,6 +7,7 @@
 import type {
   Account,
   CotEntry,
+  DailyBrief,
   DailyLevels,
   EcoEvent,
   EconIndicator,
@@ -177,6 +178,16 @@ export function createApi(baseUrl: string, token?: string | null) {
     getLevels: (symbol: string, date?: string) =>
       request<DailyLevels>(
         `/levels?symbol=${encodeURIComponent(symbol)}${date ? `&date=${encodeURIComponent(date)}` : ''}`,
+      ),
+
+    /**
+     * Levels *plus* the context that makes them mean something: average daily
+     * range, where the day sits against it, the daily trend, and how far each
+     * untaken level is in average-day terms.
+     */
+    getBrief: (symbol: string, date?: string) =>
+      request<DailyBrief>(
+        `/brief?symbol=${encodeURIComponent(symbol)}${date ? `&date=${encodeURIComponent(date)}` : ''}`,
       ),
 
     /** Symbols the MT5 feed has actually delivered — drives the picker. */

@@ -20,7 +20,7 @@ import {
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 
-import type { DailyLevels, LevelSymbol, LevelWindow } from '../api/types';
+import type { DailyBrief, LevelSymbol, LevelWindow, RangeStats, TrendRead } from '../api/types';
 import { ApiError } from '../api/client';
 import { useApi } from '../hooks/useApi';
 import { useAuth } from '../auth/AuthContext';
@@ -54,7 +54,7 @@ export default function LevelsScreen() {
   const [symbols, setSymbols] = useState<LevelSymbol[]>([]);
   const [symbol, setSymbol] = useState<string | null>(null);
   const [date, setDate] = useState<string>(todayParis());
-  const [levels, setLevels] = useState<DailyLevels | null>(null);
+  const [brief, setBrief] = useState<DailyBrief | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -79,7 +79,7 @@ export default function LevelsScreen() {
         available[0];
 
       if (!chosen) {
-        setLevels(null);
+        setBrief(null);
         return;
       }
       if (chosen.symbol !== symbol) setSymbol(chosen.symbol);
@@ -91,7 +91,7 @@ export default function LevelsScreen() {
         if (target !== date) setDate(target);
       }
 
-      setLevels(await api.getLevels(chosen.symbol, target));
+      setBrief(await api.getBrief(chosen.symbol, target));
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) {
         await signOut();
@@ -110,6 +110,7 @@ export default function LevelsScreen() {
     }, [load]),
   );
 
+  const levels = brief?.levels ?? null;
   const decimals = useMemo(
     () => priceDecimals(levels?.day?.high ?? levels?.previous_day?.high ?? 1000),
     [levels],
@@ -200,6 +201,9 @@ export default function LevelsScreen() {
         />
       ) : (
         <>
+          {/* Context: is this move already big? */}
+          {brief ? <ContextCard stats={brief.stats} trend={brief.trend} decimals={decimals} /> : null}
+
           {/* Day range hero */}
           {levels?.day ? (
             <View style={[styles.card, glow(neon.cyan, 16, 0.18)]}>
@@ -278,14 +282,190 @@ export default function LevelsScreen() {
             ))}
           </View>
 
+          {/* Observations — the same facts, in words. This block is where an
+              LLM-written version will slot in later, on top of these figures
+              rather than instead of them. */}
+          {brief && brief.observations.length > 0 ? (
+            <>
+              <Text style={styles.sectionLbl}>Constats</Text>
+              <View style={styles.listCard}>
+                {brief.observations.map((o, i) => (
+                  <View
+                    key={`${o.key}-${i}`}
+                    style={[
+                      styles.observationRow,
+                      i === brief.observations.length - 1 && styles.lastRow,
+                    ]}
+                  >
+                    <View style={styles.bullet} />
+                    <Text style={styles.observationText}>{o.text}</Text>
+                  </View>
+                ))}
+              </View>
+            </>
+          ) : null}
+
           <Text style={styles.footnote}>
             Calculé à partir des bougies M5 de ton broker. Sessions définies dans leur fuseau
-            d'origine (Londres, New York, Tokyo), heures affichées en heure de Paris.
+            d'origine (Londres, New York, Tokyo), heures affichées en heure de Paris. Les
+            pourcentages sont rapportés à l'ADR {brief?.stats.sessions ?? 20} séances : 100 % =
+            une journée moyenne pour cet instrument.
           </Text>
         </>
       )}
     </ScrollView>
   );
+}
+
+/**
+ * The question the screen exists to answer first: has the move already
+ * happened?
+ *
+ * A range in points is meaningless without a yardstick — 250 points is a quiet
+ * day on one instrument and an outlier on another. Everything here is a
+ * percentage of that instrument's own average daily range, with 100% marked on
+ * the bar so the comparison is visual rather than arithmetic.
+ */
+function ContextCard({
+  stats,
+  trend,
+  decimals,
+}: {
+  stats: RangeStats;
+  trend: TrendRead;
+  decimals: number;
+}) {
+  // Under five completed sessions the backend withholds the averages rather
+  // than computing a misleading one, so there is nothing to show.
+  if (stats.adr === null || stats.day_pct_of_adr === null) {
+    return (
+      <View style={styles.card}>
+        <Text style={styles.lbl}>Contexte</Text>
+        <Text style={styles.emptyBody}>
+          Pas encore assez d'historique pour calculer l'ADR ({stats.sessions} séance
+          {stats.sessions > 1 ? 's' : ''} sur les 5 minimum). Laisse l'EA tourner quelques jours.
+        </Text>
+      </View>
+    );
+  }
+
+  const pct = stats.day_pct_of_adr;
+  const colour = adrColour(pct);
+
+  return (
+    <View style={[styles.card, glow(colour, 16, 0.2)]}>
+      <Text style={styles.lbl}>Amplitude du jour</Text>
+
+      <View style={styles.adrRow}>
+        <Text style={[styles.adrValue, { color: colour }]}>{Math.round(pct)} %</Text>
+        <Text style={styles.adrCaption}>de l'ADR {stats.sessions} séances</Text>
+      </View>
+
+      <AdrBar pct={pct} colour={colour} />
+
+      <Text style={styles.adrDetail}>
+        {formatPrice(stats.day_range ?? 0, decimals)} pts parcourus · moyenne{' '}
+        {formatPrice(stats.adr, decimals)} · médiane {formatPrice(stats.adr_median ?? 0, decimals)}
+      </Text>
+
+      <View style={styles.contextDivider} />
+
+      <View style={styles.contextRow}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.lbl}>Tendance daily</Text>
+          <Text style={[styles.trendValue, { color: trendColour(trend.direction) }]}>
+            {trendLabel(trend.direction)}
+          </Text>
+          {trend.net_move_in_adr !== null ? (
+            <Text style={styles.contextMeta}>
+              {Math.abs(trend.net_move_in_adr).toFixed(1)} journée
+              {Math.abs(trend.net_move_in_adr) >= 2 ? 's' : ''} moyenne
+              {Math.abs(trend.net_move_in_adr) >= 2 ? 's' : ''} sur {trend.sessions} séances
+            </Text>
+          ) : null}
+          <Text style={styles.contextMeta}>
+            {trend.higher_highs_5} plus haut{trend.higher_highs_5 > 1 ? 's' : ''} ·{' '}
+            {trend.lower_lows_5} plus bas sur 5
+          </Text>
+        </View>
+
+        <View style={styles.contextSplit}>
+          <MiniStat label="Veille" pct={stats.previous_day_pct_of_adr} suffix="d'ADR" />
+          <MiniStat label="Range Asie" pct={stats.asia_pct_of_median} suffix="de sa médiane" />
+        </View>
+      </View>
+    </View>
+  );
+}
+
+/** Horizontal bar with a tick at 100%, clamped so an outlier stays readable. */
+function AdrBar({ pct, colour }: { pct: number; colour: string }) {
+  const CAP = 200; // beyond twice the average the exact width stops mattering
+  const width = Math.max(2, Math.min(pct, CAP) / CAP * 100);
+
+  return (
+    <View style={styles.barTrack}>
+      <View style={[styles.barFill, { width: `${width}%`, backgroundColor: colour }]} />
+      {/* 100% sits at half the track since the cap is 200%. */}
+      <View style={styles.barTick} />
+    </View>
+  );
+}
+
+function MiniStat({
+  label,
+  pct,
+  suffix,
+}: {
+  label: string;
+  pct: number | null;
+  suffix: string;
+}) {
+  return (
+    <View style={{ alignItems: 'flex-end' }}>
+      <Text style={styles.lbl}>{label}</Text>
+      <Text style={[styles.miniValue, { color: pct === null ? neon.muted : adrColour(pct) }]}>
+        {pct === null ? '—' : `${Math.round(pct)} %`}
+      </Text>
+      <Text style={styles.miniSuffix}>{suffix}</Text>
+    </View>
+  );
+}
+
+/**
+ * Colour by magnitude, not by good or bad. A wide day is not a buy signal and
+ * a narrow one is not a warning — the palette says "unusual", never "act".
+ */
+function adrColour(pct: number): string {
+  if (pct < 70) return neon.cyan; // quieter than usual
+  if (pct <= 130) return neon.green; // ordinary
+  return neon.violet; // notably wide
+}
+
+function trendLabel(direction: TrendRead['direction']): string {
+  switch (direction) {
+    case 'up':
+      return 'Haussière';
+    case 'down':
+      return 'Baissière';
+    case 'range':
+      return 'Range';
+    default:
+      return 'Indéterminée';
+  }
+}
+
+function trendColour(direction: TrendRead['direction']): string {
+  switch (direction) {
+    case 'up':
+      return neon.green;
+    case 'down':
+      return neon.red;
+    case 'range':
+      return neon.cyan;
+    default:
+      return neon.muted;
+  }
 }
 
 /** One rung: label, price, and the gap to the level above it. */
@@ -462,6 +642,59 @@ const styles = StyleSheet.create({
   sessionName: { color: neon.text, fontSize: 13, fontWeight: '600' },
   sessionRange: { color: neon.cyan, fontSize: 17, fontWeight: '700', marginTop: 4 },
   sessionMeta: { color: neon.muted, fontSize: 11, marginTop: 3 },
+
+  adrRow: { flexDirection: 'row', alignItems: 'baseline', gap: 8, marginTop: 2 },
+  adrValue: { fontSize: 34, fontWeight: '800' },
+  adrCaption: { color: neon.muted, fontSize: 12, flexShrink: 1 },
+  adrDetail: { color: neon.muted, fontSize: 11, marginTop: 8, lineHeight: 16 },
+
+  barTrack: {
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: neon.track,
+    marginTop: 12,
+    overflow: 'hidden',
+    justifyContent: 'center',
+  },
+  barFill: { position: 'absolute', left: 0, top: 0, bottom: 0, borderRadius: 4 },
+  barTick: {
+    position: 'absolute',
+    left: '50%',
+    width: 2,
+    top: 0,
+    bottom: 0,
+    backgroundColor: neon.bg,
+    opacity: 0.9,
+  },
+
+  contextDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: neon.border,
+    marginVertical: 14,
+  },
+  contextRow: { flexDirection: 'row', alignItems: 'flex-start' },
+  contextSplit: { gap: 12, marginLeft: 12 },
+  trendValue: { fontSize: 19, fontWeight: '700', marginTop: 2 },
+  contextMeta: { color: neon.muted, fontSize: 11, marginTop: 3, lineHeight: 15 },
+  miniValue: { fontSize: 16, fontWeight: '700', marginTop: 2 },
+  miniSuffix: { color: neon.muted, fontSize: 10 },
+
+  observationRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    paddingVertical: 10,
+    borderBottomColor: neon.border,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  bullet: {
+    width: 5,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: neon.cyan,
+    marginTop: 7,
+    marginRight: 10,
+  },
+  observationText: { color: neon.text, fontSize: 13, lineHeight: 19, flex: 1 },
 
   emptyTitle: { color: neon.text, fontSize: 15, fontWeight: '600' },
   emptyBody: { color: neon.muted, fontSize: 13, lineHeight: 19, marginTop: 6 },
