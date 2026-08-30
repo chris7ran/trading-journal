@@ -284,3 +284,75 @@ export interface LevelSymbol {
   first: string; // ISO UTC
   last: string; // ISO UTC
 }
+
+// --- Morning brief (GET /brief) ---------------------------------------------
+
+/**
+ * Range statistics for the day, all expressed against the instrument's own
+ * recent behaviour so the same number means the same thing on GER40 and on
+ * XAUUSD. `null` when there is too little history to be honest about.
+ */
+export interface RangeStats {
+  /** Completed sessions behind the averages. */
+  sessions: number;
+  /** Average daily range over the lookback, in price units. */
+  adr: number | null;
+  adr_median: number | null;
+  day_range: number | null;
+  /** Today's range as a percentage of the ADR. 100 = an average day. */
+  day_pct_of_adr: number | null;
+  previous_day_range: number | null;
+  previous_day_pct_of_adr: number | null;
+  asia_range: number | null;
+  asia_median: number | null;
+  asia_pct_of_median: number | null;
+}
+
+export type TrendDirection = 'up' | 'down' | 'range' | 'unknown';
+
+export interface TrendRead {
+  direction: TrendDirection;
+  sessions: number;
+  sma: number | null;
+  /**
+   * Last close of the lookback window — the session *before* the requested
+   * date, not today's close. The trend is read on completed sessions only.
+   */
+  window_last_close: number | null;
+  close_vs_sma_pct_of_adr: number | null;
+  net_move: number | null;
+  /** Net move measured in average days. Above 1 is what makes it a trend. */
+  net_move_in_adr: number | null;
+  higher_highs_5: number;
+  lower_lows_5: number;
+}
+
+export interface LevelDistance {
+  key: string;
+  label: string;
+  price: number;
+  /** Signed: positive when the level sits above the reference price. */
+  distance: number;
+  pct_of_adr: number | null;
+  above: boolean;
+  swept: boolean;
+}
+
+/** A measurement stated in French. Never a recommendation. */
+export interface Observation {
+  key: string;
+  text: string;
+}
+
+export interface DailyBrief {
+  symbol: string;
+  date: string;
+  /** Latest close available — what the distances are measured from. */
+  reference_price: number | null;
+  stats: RangeStats;
+  trend: TrendRead;
+  distances: LevelDistance[];
+  observations: Observation[];
+  /** Levels travel with the brief so one screen needs one request. */
+  levels: DailyLevels;
+}

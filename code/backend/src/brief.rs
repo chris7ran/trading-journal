@@ -69,7 +69,11 @@ pub struct TrendRead {
     pub direction: TrendDirection,
     pub sessions: usize,
     pub sma: Option<f64>,
-    pub last_close: Option<f64>,
+    /// Last close **of the lookback window** — i.e. the session before `date`,
+    /// not today's close. Named explicitly because the difference matters: the
+    /// trend is read on completed sessions, while `Brief::reference_price` is
+    /// the latest price the distances are measured from.
+    pub window_last_close: Option<f64>,
     /// Distance from the moving average, as a percentage of the ADR.
     pub close_vs_sma_pct_of_adr: Option<f64>,
     /// Net move over the lookback, in price units.
@@ -214,7 +218,7 @@ fn trend_read(history: &[(NaiveDate, Ohlc)], adr: Option<f64>) -> TrendRead {
             direction: TrendDirection::Unknown,
             sessions,
             sma: None,
-            last_close: None,
+            window_last_close: None,
             close_vs_sma_pct_of_adr: None,
             net_move: None,
             net_move_in_adr: None,
@@ -264,7 +268,7 @@ fn trend_read(history: &[(NaiveDate, Ohlc)], adr: Option<f64>) -> TrendRead {
         direction,
         sessions,
         sma,
-        last_close: Some(last_close),
+        window_last_close: Some(last_close),
         close_vs_sma_pct_of_adr: match (sma, adr) {
             (Some(average), Some(a)) if a > 0.0 => Some((last_close - average) / a * 100.0),
             _ => None,
