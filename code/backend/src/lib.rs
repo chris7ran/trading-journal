@@ -8,6 +8,7 @@ pub mod config;
 pub mod csv_import;
 pub mod db;
 pub mod error;
+pub mod levels;
 pub mod models;
 pub mod routes;
 pub mod state;

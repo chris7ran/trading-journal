@@ -3,6 +3,8 @@
 pub mod accounts;
 pub mod health;
 pub mod import;
+pub mod ingest;
+pub mod levels;
 pub mod market;
 pub mod setups;
 pub mod stats;
@@ -72,9 +74,31 @@ pub fn build_router(state: AppState) -> Router {
         .route("/macro/news", get(market::news))
         .route("/macro/economy", get(market::economy))
         .route("/macro/cot", get(market::cot))
+        // Static segment before any future `/levels/:something` param route.
+        .route("/levels/symbols", get(levels::list_symbols))
+        .route("/levels", get(levels::get_levels))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth_middleware::require_auth,
+        ));
+
+    // Machine-to-machine ingestion from the MT5 Expert Advisor. Not under the
+    // JWT: it authenticates with its own `X-Ingest-Token`, which grants
+    // write-only access to candles and nothing else.
+    //
+    // The token is verified in a `route_layer` rather than inside the handlers,
+    // so an unauthenticated request is rejected before its body is buffered or
+    // deserialised.
+    //
+    // No rate limiter here, unlike `/auth/login`: the EA's initial backfill is a
+    // legitimate burst of ~130 requests, and the tailnet's WireGuard/ACL layer
+    // already gates who can reach the port at all.
+    let machine = Router::new()
+        .route("/ingest/candles", post(ingest::ingest_candles))
+        .route("/ingest/status", get(ingest::ingest_status))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            ingest::require_ingest_token,
         ));
 
     // Public routes (no auth).
@@ -87,6 +111,7 @@ pub fn build_router(state: AppState) -> Router {
 
     public
         .merge(protected)
+        .merge(machine)
         .layer(TraceLayer::new_for_http())
         .layer(cors)
         .with_state(state)
