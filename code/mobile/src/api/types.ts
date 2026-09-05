@@ -390,3 +390,44 @@ export interface DailyBrief {
   /** Levels travel with the brief so one screen needs one request. */
   levels: DailyLevels;
 }
+
+// --- Brief archive (GET /brief/history, /brief/review) ----------------------
+
+/**
+ * One archived snapshot, as frozen before a session. The payload is stored
+ * verbatim server-side; this is the summary used for listing.
+ */
+export interface SnapshotSummary {
+  symbol: string;
+  date: string;
+  /** `pre_london`, `pre_ny` or `manual`. */
+  session: string;
+  captured_at: string;
+  bias_read: BiasRead | null;
+  open_above_mid: boolean | null;
+  previous_mid: number | null;
+  adr: number | null;
+  day_pct_of_adr: number | null;
+  asia_pct_of_median: number | null;
+}
+
+export interface TradeTally {
+  count: number;
+  pnl: number;
+}
+
+/**
+ * A day of the review: what the brief said before the session, and what was
+ * actually traded during it.
+ *
+ * Days with trades but no snapshot are included on purpose — they are the
+ * "before the brief existed" baseline.
+ */
+export interface ReviewDay {
+  date: string;
+  snapshots: SnapshotSummary[];
+  /** Trades on the reviewed instrument. Zero unless a symbol filter is set. */
+  trades_symbol: TradeTally;
+  /** Every trade that day — the figure that answers "am I trading more?". */
+  trades_all: TradeTally;
+}

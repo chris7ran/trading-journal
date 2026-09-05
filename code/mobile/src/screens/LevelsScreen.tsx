@@ -1,12 +1,19 @@
-// "Niveaux du jour" — the levels you would mark on a chart before the open.
+// "Niveaux" — two views behind one selector, no eighth tab in the bar.
 //
-// Layout follows how they get used, not how the API returns them:
-//   1. an échelle: every level, highest first, like a chart's price axis
-//   2. what has already been taken (sweeps), with the time
-//   3. the sessions themselves, compact, for context
+// **Jour** — what you would mark on a chart before the open, ordered by how it
+// gets used rather than by how the API returns it:
+//   1. the daily bias against the midpoint of yesterday's range
+//   2. the ADR guardrail: has the move already happened?
+//   3. where the week stands
+//   4. the ladder of levels, highest first, like a chart's price axis
+//   5. what has already been taken, and the sessions themselves
 //
-// Data comes from GET /levels, computed server-side from the M5 candles the
-// MT5 Expert Advisor pushes. All times are shown in Paris time.
+// **Historique** — the archived briefs next to the trades actually taken. It
+// exists so a broken archive gets noticed rather than filling up in silence,
+// and so that after a few months the pattern is visible by scrolling.
+//
+// Everything is computed server-side from the M5 candles the MT5 Expert
+// Advisor pushes. All times are shown in Paris time.
 
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import {
@@ -27,12 +34,13 @@ import type {
   LevelSymbol,
   LevelWindow,
   RangeStats,
+  ReviewDay,
   WeeklyProfile,
 } from '../api/types';
 import { ApiError } from '../api/client';
 import { useApi } from '../hooks/useApi';
 import { useAuth } from '../auth/AuthContext';
-import { glow, neon } from '../theme-neon';
+import { glow, moneySigned, neon } from '../theme-neon';
 import {
   buildLadder,
   formatPoints,
@@ -67,6 +75,8 @@ export default function LevelsScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
+  const [mode, setMode] = useState<'day' | 'history'>('day');
+  const [review, setReview] = useState<ReviewDay[] | null>(null);
 
   // Opening the app on a Sunday should not show an empty screen. On the very
   // first load we jump to the last day the feed actually has data for; after
@@ -100,6 +110,12 @@ export default function LevelsScreen() {
       }
 
       setBrief(await api.getBrief(chosen.symbol, target));
+
+      // Only fetched when the history view is on screen: it walks two months
+      // of snapshots and trades, and the day view never needs it.
+      if (mode === 'history') {
+        setReview(await api.getReview(chosen.symbol, shiftDate(todayParis(), -60)));
+      }
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) {
         await signOut();
@@ -110,7 +126,7 @@ export default function LevelsScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [api, signOut, symbol, date]);
+  }, [api, signOut, symbol, date, mode]);
 
   useFocusEffect(
     useCallback(() => {
@@ -174,6 +190,37 @@ export default function LevelsScreen() {
         })}
       </ScrollView>
 
+      {/* Jour / Historique. Deliberately a selector inside this tab rather than
+          an eighth tab in the bar — seven is already the practical limit. */}
+      <View style={styles.modeBar}>
+        {(['day', 'history'] as const).map((m) => {
+          const on = m === mode;
+          return (
+            <Pressable
+              key={m}
+              onPress={() => setMode(m)}
+              style={[styles.modeBtn, on && styles.modeBtnOn]}
+            >
+              <Text style={[styles.modeText, on && styles.modeTextOn]}>
+                {m === 'day' ? 'Jour' : 'Historique'}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+
+      {error ? <Text style={styles.error}>{error}</Text> : null}
+
+      {mode === 'history' ? (
+        <HistoryList
+          days={review}
+          onPick={(picked) => {
+            setDate(picked);
+            setMode('day');
+          }}
+        />
+      ) : (
+        <>
       {/* Date navigation */}
       <View style={styles.dateBar}>
         <Pressable onPress={() => setDate(shiftDate(date, -1))} hitSlop={12} style={styles.arrow}>
@@ -194,8 +241,6 @@ export default function LevelsScreen() {
           <Text style={[styles.arrowText, date >= todayParis() && styles.arrowOff]}>›</Text>
         </Pressable>
       </View>
-
-      {error ? <Text style={styles.error}>{error}</Text> : null}
 
       {symbols.length === 0 ? (
         <Empty
@@ -328,7 +373,104 @@ export default function LevelsScreen() {
           </Text>
         </>
       )}
+        </>
+      )}
     </ScrollView>
+  );
+}
+
+/**
+ * The review: what the brief said before each session, next to what was
+ * actually traded that day.
+ *
+ * No verdict, no average. With a few weeks of history any statistic by bias
+ * reading would be noise wearing the costume of insight — and the point of
+ * showing this now is not to conclude, it is so that a broken archive gets
+ * noticed instead of filling up in silence.
+ */
+function HistoryList({
+  days,
+  onPick,
+}: {
+  days: ReviewDay[] | null;
+  onPick: (date: string) => void;
+}) {
+  if (days === null) {
+    return (
+      <View style={styles.centeredBlock}>
+        <ActivityIndicator color={neon.green} />
+      </View>
+    );
+  }
+  if (days.length === 0) {
+    return (
+      <Empty
+        title="Rien d'archivé pour l'instant"
+        body="Les briefs sont figés automatiquement à 7h45 et 15h, du lundi au vendredi. Reviens après la première capture."
+      />
+    );
+  }
+
+  return (
+    <>
+      <Text style={styles.sectionLbl}>60 derniers jours</Text>
+      <View style={styles.listCard}>
+        {days.map((day, i) => (
+          <ReviewRow
+            key={day.date}
+            day={day}
+            last={i === days.length - 1}
+            onPress={() => onPick(day.date)}
+          />
+        ))}
+      </View>
+      <Text style={styles.footnote}>
+        Le biais affiché est celui qui était figé avant la séance, pas une relecture d'après coup.
+        Les jours sans brief sont conservés : ce sont eux qui servent de point de comparaison.
+      </Text>
+    </>
+  );
+}
+
+function ReviewRow({
+  day,
+  last,
+  onPress,
+}: {
+  day: ReviewDay;
+  last: boolean;
+  onPress: () => void;
+}) {
+  // Two captures a day; the pre-London one is the morning read. Falling back to
+  // whatever exists keeps manual and pre-NY captures visible too.
+  const morning =
+    day.snapshots.find((s) => s.session === 'pre_london') ?? day.snapshots[0] ?? null;
+  const read = morning?.bias_read ?? null;
+  const tally = day.trades_symbol.count > 0 ? day.trades_symbol : day.trades_all;
+
+  return (
+    <Pressable onPress={onPress} style={[styles.reviewRow, last && styles.lastRow]}>
+      <View style={{ flex: 1, paddingRight: 10 }}>
+        <Text style={styles.reviewDate}>{humanDate(day.date)}</Text>
+        <Text style={[styles.reviewBias, { color: read ? biasColour(read) : neon.muted }]}>
+          {read ? biasLabel(read) : 'Pas de brief'}
+        </Text>
+        {day.snapshots.length > 1 ? (
+          <Text style={styles.reviewSessions}>{day.snapshots.length} captures</Text>
+        ) : null}
+      </View>
+
+      <View style={{ alignItems: 'flex-end' }}>
+        <Text style={styles.reviewTrades}>
+          {tally.count === 0 ? 'aucun trade' : `${tally.count} trade${tally.count > 1 ? 's' : ''}`}
+        </Text>
+        {tally.count > 0 ? (
+          <Text style={[styles.reviewPnl, { color: tally.pnl >= 0 ? neon.green : neon.red }]}>
+            {moneySigned(tally.pnl)}
+          </Text>
+        ) : null}
+      </View>
+    </Pressable>
   );
 }
 
@@ -832,6 +974,36 @@ const styles = StyleSheet.create({
     marginRight: 10,
   },
   observationText: { color: neon.text, fontSize: 13, lineHeight: 19, flex: 1 },
+
+  modeBar: {
+    flexDirection: 'row',
+    gap: 6,
+    backgroundColor: neon.panel,
+    borderColor: neon.border,
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 5,
+    marginHorizontal: 16,
+    marginTop: 12,
+  },
+  modeBtn: { flex: 1, alignItems: 'center', paddingVertical: 9, borderRadius: 10 },
+  modeBtnOn: { backgroundColor: 'rgba(34,211,238,0.14)' },
+  modeText: { color: neon.muted, fontSize: 13, fontWeight: '600' },
+  modeTextOn: { color: neon.cyan },
+
+  centeredBlock: { paddingVertical: 40, alignItems: 'center' },
+  reviewRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderBottomColor: neon.border,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  reviewDate: { color: neon.text, fontSize: 14, fontWeight: '600', textTransform: 'capitalize' },
+  reviewBias: { fontSize: 12, fontWeight: '600', marginTop: 2 },
+  reviewSessions: { color: neon.muted, fontSize: 10, marginTop: 1 },
+  reviewTrades: { color: neon.muted, fontSize: 12 },
+  reviewPnl: { fontSize: 15, fontWeight: '700', marginTop: 2 },
 
   emptyTitle: { color: neon.text, fontSize: 15, fontWeight: '600' },
   emptyBody: { color: neon.muted, fontSize: 13, lineHeight: 19, marginTop: 6 },
