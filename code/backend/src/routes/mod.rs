@@ -1,6 +1,7 @@
 //! HTTP routing: assembles public and protected routes into a single Router.
 
 pub mod accounts;
+pub mod archive;
 pub mod health;
 pub mod import;
 pub mod ingest;
@@ -78,6 +79,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/levels/symbols", get(levels::list_symbols))
         .route("/levels", get(levels::get_levels))
         .route("/brief", get(levels::get_brief))
+        // Static segments before `/brief` itself would be ambiguous, so the
+        // archive lives on its own paths.
+        .route("/brief/history", get(archive::history))
+        .route("/brief/archived", get(archive::get_snapshot))
+        .route("/brief/review", get(archive::review))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth_middleware::require_auth,
@@ -97,6 +103,9 @@ pub fn build_router(state: AppState) -> Router {
     let machine = Router::new()
         .route("/ingest/candles", post(ingest::ingest_candles))
         .route("/ingest/status", get(ingest::ingest_status))
+        // Freezing the brief is a cron's job, not a person's — same machine
+        // credential as the candle feed.
+        .route("/brief/snapshot", post(archive::create_snapshot))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             ingest::require_ingest_token,

@@ -58,16 +58,28 @@ pub async fn get_brief(
     }
 
     let date = parse_date(query.date.as_deref())?;
+    Ok(Json(build_brief(&state, &symbol, date).await?))
+}
+
+/// Build the full brief payload for one symbol and date.
+///
+/// Shared with the archive: a snapshot must freeze exactly what the screen
+/// would have shown, so both paths have to go through the same code.
+pub(crate) async fn build_brief(
+    state: &AppState,
+    symbol: &str,
+    date: NaiveDate,
+) -> AppResult<BriefResponse> {
     let (from, to) = levels::utc_bounds_for_history(date, brief::HISTORY_DAYS);
-    let candles = fetch_candles(&state, &symbol, from, to).await?;
+    let candles = fetch_candles(state, symbol, from, to).await?;
 
-    let daily = levels::compute(&symbol, date, &candles);
-    let brief = brief::build(&symbol, date, &candles, &daily);
+    let daily = levels::compute(symbol, date, &candles);
+    let brief = brief::build(symbol, date, &candles, &daily);
 
-    Ok(Json(BriefResponse {
+    Ok(BriefResponse {
         brief,
         levels: daily,
-    }))
+    })
 }
 
 /// Levels and brief travel together: the app renders them on one screen, and
@@ -80,7 +92,7 @@ pub struct BriefResponse {
     pub levels: DailyLevels,
 }
 
-fn parse_date(raw: Option<&str>) -> AppResult<NaiveDate> {
+pub(crate) fn parse_date(raw: Option<&str>) -> AppResult<NaiveDate> {
     match raw {
         Some(value) => value.parse::<NaiveDate>().map_err(|_| {
             AppError::BadRequest(format!("invalid date '{value}', expected YYYY-MM-DD"))
@@ -117,7 +129,7 @@ pub async fn list_symbols(State(state): State<AppState>) -> AppResult<Json<Value
 
 /// Load the candles needed to compute `date`, including the few prior days the
 /// previous-trading-day search may reach back into.
-async fn fetch_candles(
+pub(crate) async fn fetch_candles(
     state: &AppState,
     symbol: &str,
     from: chrono::DateTime<Utc>,
