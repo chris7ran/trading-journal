@@ -20,7 +20,7 @@
 //! a language model later: it will be given facts to phrase, never figures to
 //! compute.
 
-use chrono::{Duration, NaiveDate};
+use chrono::{Datelike, Duration, NaiveDate};
 use serde::Serialize;
 
 use crate::levels::{self, Candle, DailyLevels, Ohlc, DAY_TZ};
@@ -55,33 +55,89 @@ pub struct RangeStats {
     pub asia_pct_of_median: Option<f64>,
 }
 
+/// Descriptive reading of the session against the previous day's midpoint.
+///
+/// These are *observations of what happened*, not forecasts. In particular,
+/// `Continuation*` and `Reversal*` can only be established once the session has
+/// traded — see the `known_at_open` flag on [`DailyBias`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum TrendDirection {
-    Up,
-    Down,
-    Range,
-    Unknown,
+pub enum BiasRead {
+    /// Opened above the midpoint and the low never came back below it.
+    ContinuationHaussiere,
+    /// Opened below and the high never came back above.
+    ContinuationBaissiere,
+    /// Took the previous high, then closed back under the midpoint.
+    ReversalDepuisLeHaut,
+    /// Took the previous low, then closed back above the midpoint.
+    ReversalDepuisLeBas,
+    /// The midpoint was traded through both ways — no clean signature.
+    ZeroCinqTraverse,
+    Indetermine,
 }
 
+/// Daily bias built on the previous session's midpoint.
+///
+/// # The one distinction that matters here
+///
+/// Only `open_above_mid` is knowable **before** the session — it is the actual
+/// bias. `held_above_mid`, `closed_above_mid` and the reversal flags describe a
+/// session that has already traded, and are recorded for the review, not for a
+/// decision. Measuring them on a completed day and calling the result a
+/// prediction is circular: a day whose low never returned below the midpoint is
+/// by construction a strongly directional up-day, so of course it reached the
+/// previous high. That number looks impressive and forecasts nothing.
 #[derive(Debug, Clone, Serialize)]
-pub struct TrendRead {
-    pub direction: TrendDirection,
+pub struct DailyBias {
+    /// Midpoint of the previous session's range — the reference level.
+    pub previous_mid: Option<f64>,
+    pub previous_high: Option<f64>,
+    pub previous_low: Option<f64>,
+
+    /// The only forward-looking fact in this struct.
+    pub open_above_mid: Option<bool>,
+    /// True while nothing else here is usable ahead of the session.
+    pub known_at_open: bool,
+
+    /// Session low stayed above the midpoint — continuation intact.
+    pub held_above_mid: Option<bool>,
+    /// Session high stayed below the midpoint.
+    pub held_below_mid: Option<bool>,
+    pub closed_above_mid: Option<bool>,
+
+    pub touched_pdh: Option<bool>,
+    pub touched_pdl: Option<bool>,
+    /// Which extreme was reached first, inferred from the timestamps of the
+    /// session's high and low. An approximation, but it separates a directional
+    /// day from one that swept both sides.
+    pub first_taken: Option<&'static str>,
+
+    /// Reversal signature: took the previous high, then closed under the midpoint.
+    pub reversal_from_high: Option<bool>,
+    pub reversal_from_low: Option<bool>,
+
+    pub read: BiasRead,
+}
+
+/// Where the week stands: which session made its high, which made its low.
+///
+/// This is the input a weekly-profile framework needs — whether the extreme is
+/// already in, and on which weekday it printed.
+#[derive(Debug, Clone, Serialize)]
+pub struct WeeklyProfile {
+    pub week_start: NaiveDate,
+    /// Completed sessions in the week up to and including `date`.
     pub sessions: usize,
-    pub sma: Option<f64>,
-    /// Last close **of the lookback window** — i.e. the session before `date`,
-    /// not today's close. Named explicitly because the difference matters: the
-    /// trend is read on completed sessions, while `Brief::reference_price` is
-    /// the latest price the distances are measured from.
-    pub window_last_close: Option<f64>,
-    /// Distance from the moving average, as a percentage of the ADR.
-    pub close_vs_sma_pct_of_adr: Option<f64>,
-    /// Net move over the lookback, in price units.
-    pub net_move: Option<f64>,
-    /// That net move measured in average days — the figure the direction rests on.
-    pub net_move_in_adr: Option<f64>,
-    pub higher_highs_5: usize,
-    pub lower_lows_5: usize,
+    pub today_weekday: &'static str,
+    pub high: Option<f64>,
+    pub high_day: Option<NaiveDate>,
+    pub high_weekday: Option<&'static str>,
+    pub low: Option<f64>,
+    pub low_day: Option<NaiveDate>,
+    pub low_weekday: Option<&'static str>,
+    pub range: Option<f64>,
+    /// Weekly range as a percentage of the ADR — is the week already wide?
+    pub range_pct_of_adr: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -109,7 +165,8 @@ pub struct Brief {
     /// Last close available — what distances are measured from.
     pub reference_price: Option<f64>,
     pub stats: RangeStats,
-    pub trend: TrendRead,
+    pub bias: DailyBias,
+    pub weekly: WeeklyProfile,
     pub distances: Vec<LevelDistance>,
     pub observations: Vec<Observation>,
 }
@@ -127,7 +184,8 @@ pub fn build(symbol: &str, date: NaiveDate, candles: &[Candle], levels: &DailyLe
     let history = levels::daily_series(candles, date - Duration::days(1), LOOKBACK_SESSIONS);
 
     let stats = range_stats(candles, &history, levels);
-    let trend = trend_read(&history, stats.adr);
+    let bias = daily_bias(levels);
+    let weekly = weekly_profile(candles, date, stats.adr);
 
     let reference_price = levels
         .day
@@ -135,15 +193,16 @@ pub fn build(symbol: &str, date: NaiveDate, candles: &[Candle], levels: &DailyLe
         .map(|d| d.close)
         .or_else(|| history.last().map(|(_, o)| o.close));
 
-    let distances = distances(levels, reference_price, stats.adr);
-    let observations = observations(&stats, &trend, levels, &distances);
+    let distances = distances(levels, reference_price, stats.adr, bias.previous_mid);
+    let observations = observations(&stats, &bias, &weekly, levels, &distances);
 
     Brief {
         symbol: symbol.to_string(),
         date,
         reference_price,
         stats,
-        trend,
+        bias,
+        weekly,
         distances,
         observations,
     }
@@ -201,82 +260,161 @@ fn range_stats(
     }
 }
 
-// --- Trend ------------------------------------------------------------------
+// --- Daily bias -------------------------------------------------------------
 
-/// Read the daily trend from completed sessions.
+/// Read the session against the previous session's midpoint.
 ///
-/// The direction test is deliberately scale-free: the net move over the window
-/// is compared to **one average day's range**. If twenty sessions have produced
-/// less than a single average day of net travel, that is a range regardless of
-/// what the closes did in between — and the same rule reads correctly on a
-/// 26,000-point index and on a 4,400-point metal, which a percentage threshold
-/// would not.
-fn trend_read(history: &[(NaiveDate, Ohlc)], adr: Option<f64>) -> TrendRead {
-    let sessions = history.len();
-    if sessions < MIN_SESSIONS_FOR_STATS {
-        return TrendRead {
-            direction: TrendDirection::Unknown,
-            sessions,
-            sma: None,
-            window_last_close: None,
-            close_vs_sma_pct_of_adr: None,
-            net_move: None,
-            net_move_in_adr: None,
-            higher_highs_5: 0,
-            lower_lows_5: 0,
-        };
-    }
-
-    let closes: Vec<f64> = history.iter().map(|(_, o)| o.close).collect();
-    let sma = mean(&closes);
-    let last_close = *closes.last().expect("checked non-empty");
-    let first_close = closes[0];
-    let net_move = last_close - first_close;
-
-    let net_move_in_adr = adr.filter(|a| *a > 0.0).map(|a| net_move / a);
-    let direction = match (net_move_in_adr, sma) {
-        (Some(moved), Some(average)) => {
-            if moved.abs() < 1.0 {
-                TrendDirection::Range
-            } else if moved > 0.0 && last_close > average {
-                TrendDirection::Up
-            } else if moved < 0.0 && last_close < average {
-                TrendDirection::Down
-            } else {
-                // Net move and position around the mean disagree — a turn in
-                // progress. Calling that a trend would be overreaching.
-                TrendDirection::Range
-            }
-        }
-        _ => TrendDirection::Unknown,
+/// The midpoint is `(previous high + previous low) / 2` — the middle of the
+/// range, not of the body. Every flag below is a plain measurement; the
+/// `known_at_open` field marks how much of it was available before the session
+/// started, which is the difference between a bias and a description.
+fn daily_bias(levels: &DailyLevels) -> DailyBias {
+    let empty = DailyBias {
+        previous_mid: None,
+        previous_high: None,
+        previous_low: None,
+        open_above_mid: None,
+        known_at_open: false,
+        held_above_mid: None,
+        held_below_mid: None,
+        closed_above_mid: None,
+        touched_pdh: None,
+        touched_pdl: None,
+        first_taken: None,
+        reversal_from_high: None,
+        reversal_from_low: None,
+        read: BiasRead::Indetermine,
     };
 
-    // Structure over the last five sessions, counted pairwise.
-    let tail = &history[history.len().saturating_sub(6)..];
-    let mut higher_highs = 0;
-    let mut lower_lows = 0;
-    for pair in tail.windows(2) {
-        if pair[1].1.high > pair[0].1.high {
-            higher_highs += 1;
+    let Some(previous) = levels.previous_day.as_ref() else {
+        return empty;
+    };
+    let (pdh, pdl) = (previous.ohlc.high, previous.ohlc.low);
+    if !(pdh > pdl) {
+        return empty;
+    }
+    let mid = (pdh + pdl) / 2.0;
+
+    // The midpoint exists as soon as yesterday closed, even if today has not
+    // traded yet — that is precisely the pre-session case worth serving.
+    let Some(day) = levels.day.as_ref() else {
+        return DailyBias {
+            previous_mid: Some(mid),
+            previous_high: Some(pdh),
+            previous_low: Some(pdl),
+            known_at_open: true,
+            ..empty
+        };
+    };
+
+    let touched_pdh = day.high > pdh;
+    let touched_pdl = day.low < pdl;
+
+    // Which extreme printed first, from the timestamps of the session's high
+    // and low. Only meaningful when both sides were reached.
+    let first_taken = match (touched_pdh, touched_pdl) {
+        (true, true) => Some(if day.high_at < day.low_at { "PDH" } else { "PDL" }),
+        (true, false) => Some("PDH"),
+        (false, true) => Some("PDL"),
+        (false, false) => None,
+    };
+
+    let held_above = day.low > mid;
+    let held_below = day.high < mid;
+    let closed_above = day.close > mid;
+
+    let reversal_from_high = touched_pdh && day.close < mid;
+    let reversal_from_low = touched_pdl && day.close > mid;
+
+    // Reversal takes precedence: taking the previous extreme and closing back
+    // through the midpoint is the stronger signature, and it can coexist with
+    // an open on the "wrong" side of the level.
+    let read = if reversal_from_high {
+        BiasRead::ReversalDepuisLeHaut
+    } else if reversal_from_low {
+        BiasRead::ReversalDepuisLeBas
+    } else if held_above {
+        BiasRead::ContinuationHaussiere
+    } else if held_below {
+        BiasRead::ContinuationBaissiere
+    } else {
+        BiasRead::ZeroCinqTraverse
+    };
+
+    DailyBias {
+        previous_mid: Some(mid),
+        previous_high: Some(pdh),
+        previous_low: Some(pdl),
+        open_above_mid: Some(day.open > mid),
+        known_at_open: true,
+        held_above_mid: Some(held_above),
+        held_below_mid: Some(held_below),
+        closed_above_mid: Some(closed_above),
+        touched_pdh: Some(touched_pdh),
+        touched_pdl: Some(touched_pdl),
+        first_taken,
+        reversal_from_high: Some(reversal_from_high),
+        reversal_from_low: Some(reversal_from_low),
+        read,
+    }
+}
+
+// --- Weekly profile ---------------------------------------------------------
+
+const WEEKDAYS: [&str; 7] = [
+    "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche",
+];
+
+fn weekday_name(day: NaiveDate) -> &'static str {
+    WEEKDAYS[day.weekday().num_days_from_monday() as usize]
+}
+
+/// Which session made the week's high, which made its low, and how wide the
+/// week already is.
+///
+/// Weekly-profile frameworks hinge on whether an extreme is already in and on
+/// which weekday it printed, so both the value and the day are reported.
+fn weekly_profile(candles: &[Candle], date: NaiveDate, adr: Option<f64>) -> WeeklyProfile {
+    let week_start = date - Duration::days(date.weekday().num_days_from_monday() as i64);
+
+    let mut sessions = 0usize;
+    let mut high: Option<(f64, NaiveDate)> = None;
+    let mut low: Option<(f64, NaiveDate)> = None;
+
+    let mut day = week_start;
+    while day <= date {
+        if let Some((_, ohlc)) = levels::daily_series(candles, day, 1)
+            .into_iter()
+            .find(|(d, _)| *d == day)
+        {
+            sessions += 1;
+            if high.map_or(true, |(h, _)| ohlc.high > h) {
+                high = Some((ohlc.high, day));
+            }
+            if low.map_or(true, |(l, _)| ohlc.low < l) {
+                low = Some((ohlc.low, day));
+            }
         }
-        if pair[1].1.low < pair[0].1.low {
-            lower_lows += 1;
-        }
+        day += Duration::days(1);
     }
 
-    TrendRead {
-        direction,
+    let range = match (high, low) {
+        (Some((h, _)), Some((l, _))) => Some(h - l),
+        _ => None,
+    };
+
+    WeeklyProfile {
+        week_start,
         sessions,
-        sma,
-        window_last_close: Some(last_close),
-        close_vs_sma_pct_of_adr: match (sma, adr) {
-            (Some(average), Some(a)) if a > 0.0 => Some((last_close - average) / a * 100.0),
-            _ => None,
-        },
-        net_move: Some(net_move),
-        net_move_in_adr,
-        higher_highs_5: higher_highs,
-        lower_lows_5: lower_lows,
+        today_weekday: weekday_name(date),
+        high: high.map(|(v, _)| v),
+        high_day: high.map(|(_, d)| d),
+        high_weekday: high.map(|(_, d)| weekday_name(d)),
+        low: low.map(|(v, _)| v),
+        low_day: low.map(|(_, d)| d),
+        low_weekday: low.map(|(_, d)| weekday_name(d)),
+        range,
+        range_pct_of_adr: ratio_pct(range, adr),
     }
 }
 
@@ -286,6 +424,7 @@ fn distances(
     levels: &DailyLevels,
     reference: Option<f64>,
     adr: Option<f64>,
+    previous_mid: Option<f64>,
 ) -> Vec<LevelDistance> {
     let Some(price) = reference else {
         return Vec::new();
@@ -315,6 +454,11 @@ fn distances(
         push("pdh".into(), "PDH".into(), Some(prev.ohlc.high));
         push("pdl".into(), "PDL".into(), Some(prev.ohlc.low));
     }
+    push(
+        "previous_mid".into(),
+        "0,5 de la veille".into(),
+        previous_mid,
+    );
     for window in &levels.opening_ranges {
         push(
             format!("{}_high", window.key),
@@ -382,11 +526,62 @@ fn swept_at(levels: &DailyLevels, level: f64) -> Option<String> {
 /// Plain measurements, in French. No verb of recommendation appears here.
 fn observations(
     stats: &RangeStats,
-    trend: &TrendRead,
+    bias: &DailyBias,
+    weekly: &WeeklyProfile,
     levels: &DailyLevels,
     distances: &[LevelDistance],
 ) -> Vec<Observation> {
     let mut out = Vec::new();
+
+    // --- The bias first: it is what the session is read against. ------------
+
+    if let Some(mid) = bias.previous_mid {
+        let mut text = format!("0,5 de la veille : {}.", pts(mid));
+        if let Some(above) = bias.open_above_mid {
+            text.push_str(if above {
+                " Ouverture au-dessus."
+            } else {
+                " Ouverture en dessous."
+            });
+        }
+        out.push(Observation {
+            key: "bias_mid",
+            text,
+        });
+    }
+
+    match bias.read {
+        BiasRead::ContinuationHaussiere => out.push(Observation {
+            key: "bias_read",
+            text: "Continuation haussière : le bas de la séance n'est jamais repassé sous le 0,5.".into(),
+        }),
+        BiasRead::ContinuationBaissiere => out.push(Observation {
+            key: "bias_read",
+            text: "Continuation baissière : le haut de la séance n'est jamais repassé au-dessus du 0,5.".into(),
+        }),
+        BiasRead::ReversalDepuisLeHaut => out.push(Observation {
+            key: "bias_read",
+            text: "Reversal depuis le haut : le PDH a été pris, puis clôture sous le 0,5.".into(),
+        }),
+        BiasRead::ReversalDepuisLeBas => out.push(Observation {
+            key: "bias_read",
+            text: "Reversal depuis le bas : le PDL a été pris, puis clôture au-dessus du 0,5.".into(),
+        }),
+        BiasRead::ZeroCinqTraverse => out.push(Observation {
+            key: "bias_read",
+            text: "Le 0,5 de la veille a été traversé dans les deux sens : pas de signature nette.".into(),
+        }),
+        BiasRead::Indetermine => {}
+    }
+
+    if let Some(first) = bias.first_taken {
+        out.push(Observation {
+            key: "bias_first",
+            text: format!("Premier extrême de la veille atteint : {first}."),
+        });
+    }
+
+    // --- The guardrail: is the move already made? ---------------------------
 
     if let (Some(range), Some(pct), Some(adr)) =
         (stats.day_range, stats.day_pct_of_adr, stats.adr)
@@ -433,38 +628,24 @@ fn observations(
         });
     }
 
-    if trend.direction != TrendDirection::Unknown {
-        let label = match trend.direction {
-            TrendDirection::Up => "haussière",
-            TrendDirection::Down => "baissière",
-            _ => "sans direction nette",
-        };
-        let detail = match trend.net_move_in_adr {
-            Some(moved) => format!(
-                " Sur {} séances, le net parcouru vaut {:.1} journée(s) moyenne(s).",
-                trend.sessions,
-                moved.abs()
-            ),
+    // --- Where the week stands ----------------------------------------------
+
+    if let (Some(high_day), Some(low_day)) = (weekly.high_weekday, weekly.low_weekday) {
+        let width = match weekly.range_pct_of_adr {
+            Some(p) => format!(" Amplitude de la semaine : {} % d'une journée moyenne.", p.round()),
             None => String::new(),
         };
         out.push(Observation {
-            key: "trend",
-            text: format!("Tendance daily : {label}.{detail}"),
-        });
-    }
-
-    if trend.higher_highs_5 > 0 || trend.lower_lows_5 > 0 {
-        out.push(Observation {
-            key: "structure",
+            key: "weekly",
             text: format!(
-                "Sur les 5 dernières séances : {} plus haut(s) supérieur(s) à la veille, {} plus bas inférieur(s).",
-                trend.higher_highs_5, trend.lower_lows_5
+                "Semaine en cours ({} séances, on est {}) : haut fait {}, bas fait {}.{width}",
+                weekly.sessions, weekly.today_weekday, high_day, low_day
             ),
         });
     }
 
-    // The two nearest untouched levels — what stands in the way, and how far
-    // that is in average-day terms.
+    // --- What still stands in the way ---------------------------------------
+
     for level in distances.iter().filter(|d| !d.swept).take(2) {
         let direction = if level.above { "au-dessus" } else { "en dessous" };
         let in_adr = match level.pct_of_adr {
@@ -591,90 +772,164 @@ mod tests {
         assert_eq!(ratio_pct(None, Some(100.0)), None);
     }
 
-    fn history_from(ranges: &[(f64, f64, f64)]) -> Vec<(NaiveDate, Ohlc)> {
-        // (high, low, close) per session, oldest first, on consecutive dates.
-        ranges
-            .iter()
-            .enumerate()
-            .map(|(i, (high, low, close))| {
-                let day = date("2026-06-01") + Duration::days(i as i64);
-                (
-                    day,
-                    Ohlc {
-                        open: *low,
-                        high: *high,
-                        low: *low,
-                        close: *close,
-                        range: high - low,
-                        bars: 200,
-                        high_at: utc("2026-06-01T10:00:00Z"),
-                        low_at: utc("2026-06-01T11:00:00Z"),
-                    },
-                )
-            })
-            .collect()
-    }
+    fn levels_with(
+        prev: (f64, f64),
+        day: Option<(f64, f64, f64, f64)>,
+        high_first: bool,
+    ) -> DailyLevels {
+        use crate::levels::PreviousDay;
 
-    #[test]
-    fn a_market_going_nowhere_is_called_a_range_not_a_trend() {
-        // Ten sessions, 100-point days, closing where it started.
-        let mut rows = Vec::new();
-        for i in 0..10 {
-            let base = 1000.0 + if i % 2 == 0 { 10.0 } else { -10.0 };
-            rows.push((base + 50.0, base - 50.0, base));
+        let ohlc = |o: f64, h: f64, l: f64, c: f64, high_at: &str, low_at: &str| Ohlc {
+            open: o,
+            high: h,
+            low: l,
+            close: c,
+            range: h - l,
+            bars: 200,
+            high_at: utc(high_at),
+            low_at: utc(low_at),
+        };
+
+        DailyLevels {
+            symbol: "TEST".into(),
+            date: date("2026-07-15"),
+            timezone: "Europe/Paris",
+            day: day.map(|(o, h, l, c)| {
+                if high_first {
+                    ohlc(o, h, l, c, "2026-07-15T09:00:00Z", "2026-07-15T15:00:00Z")
+                } else {
+                    ohlc(o, h, l, c, "2026-07-15T15:00:00Z", "2026-07-15T09:00:00Z")
+                }
+            }),
+            previous_day: Some(PreviousDay {
+                date: date("2026-07-14"),
+                ohlc: ohlc(
+                    prev.1,
+                    prev.0,
+                    prev.1,
+                    prev.0,
+                    "2026-07-14T09:00:00Z",
+                    "2026-07-14T15:00:00Z",
+                ),
+            }),
+            sessions: Vec::new(),
+            opening_ranges: Vec::new(),
+            sweeps: Vec::new(),
         }
-        let history = history_from(&rows);
-        let trend = trend_read(&history, Some(100.0));
-        assert_eq!(trend.direction, TrendDirection::Range);
+    }
+
+    // --- Daily bias ---------------------------------------------------------
+
+    #[test]
+    fn the_midpoint_is_the_middle_of_the_previous_range() {
+        // Previous session 1000 -> 1100, so the 0.5 sits at 1050.
+        let levels = levels_with((1100.0, 1000.0), Some((1060.0, 1080.0, 1055.0, 1075.0)), true);
+        let bias = daily_bias(&levels);
+        assert_eq!(bias.previous_mid, Some(1050.0));
+        assert_eq!(bias.previous_high, Some(1100.0));
+        assert_eq!(bias.previous_low, Some(1000.0));
     }
 
     #[test]
-    fn a_sustained_advance_is_called_up() {
-        // Ten sessions climbing 40 points each: 360 net on a 100-point ADR.
-        let rows: Vec<(f64, f64, f64)> = (0..10)
-            .map(|i| {
-                let base = 1000.0 + 40.0 * i as f64;
-                (base + 50.0, base - 50.0, base)
-            })
-            .collect();
-        let history = history_from(&rows);
-        let trend = trend_read(&history, Some(100.0));
+    fn a_session_whose_low_holds_above_the_midpoint_reads_as_continuation() {
+        let levels = levels_with((1100.0, 1000.0), Some((1060.0, 1080.0, 1055.0, 1075.0)), true);
+        let bias = daily_bias(&levels);
 
-        assert_eq!(trend.direction, TrendDirection::Up);
-        assert_eq!(trend.net_move, Some(360.0));
-        assert_eq!(trend.net_move_in_adr, Some(3.6));
-        assert_eq!(trend.higher_highs_5, 5);
-        assert_eq!(trend.lower_lows_5, 0);
+        assert_eq!(bias.open_above_mid, Some(true));
+        assert_eq!(bias.held_above_mid, Some(true));
+        assert_eq!(bias.read, BiasRead::ContinuationHaussiere);
+        assert_eq!(bias.touched_pdh, Some(false));
     }
 
     #[test]
-    fn the_direction_test_is_scale_free() {
-        // Same shape at two very different price scales must read the same.
-        let small: Vec<(f64, f64, f64)> = (0..10)
-            .map(|i| {
-                let b = 4000.0 + 40.0 * i as f64;
-                (b + 50.0, b - 50.0, b)
-            })
-            .collect();
-        let large: Vec<(f64, f64, f64)> = (0..10)
-            .map(|i| {
-                let b = 26000.0 + 40.0 * i as f64;
-                (b + 50.0, b - 50.0, b)
-            })
-            .collect();
+    fn taking_the_previous_high_then_closing_under_the_midpoint_is_a_reversal() {
+        // High 1120 > PDH 1100, close 1020 < mid 1050.
+        let levels = levels_with((1100.0, 1000.0), Some((1090.0, 1120.0, 1010.0, 1020.0)), true);
+        let bias = daily_bias(&levels);
 
-        assert_eq!(
-            trend_read(&history_from(&small), Some(100.0)).direction,
-            trend_read(&history_from(&large), Some(100.0)).direction,
-        );
+        assert_eq!(bias.touched_pdh, Some(true));
+        assert_eq!(bias.reversal_from_high, Some(true));
+        assert_eq!(bias.read, BiasRead::ReversalDepuisLeHaut);
+    }
+
+    /// The reversal signature must win even when the session opened on the
+    /// "continuation" side — that is exactly the case the framework describes.
+    #[test]
+    fn the_reversal_signature_outranks_the_opening_side() {
+        let levels = levels_with((1100.0, 1000.0), Some((1090.0, 1120.0, 1010.0, 1020.0)), true);
+        let bias = daily_bias(&levels);
+        assert_eq!(bias.open_above_mid, Some(true));
+        assert_eq!(bias.read, BiasRead::ReversalDepuisLeHaut);
     }
 
     #[test]
-    fn too_little_history_is_reported_as_unknown_rather_than_guessed() {
-        let history = history_from(&[(1050.0, 950.0, 1000.0), (1060.0, 960.0, 1010.0)]);
-        let trend = trend_read(&history, Some(100.0));
-        assert_eq!(trend.direction, TrendDirection::Unknown);
-        assert!(trend.sma.is_none());
+    fn a_session_straddling_the_midpoint_gets_no_clean_read() {
+        // Trades either side of 1050 and closes above, without taking PDH/PDL.
+        let levels = levels_with((1100.0, 1000.0), Some((1040.0, 1070.0, 1020.0, 1060.0)), true);
+        let bias = daily_bias(&levels);
+        assert_eq!(bias.read, BiasRead::ZeroCinqTraverse);
+    }
+
+    /// Before the session has traded, the midpoint is still known — that is the
+    /// pre-open case the screen has to serve.
+    #[test]
+    fn the_midpoint_is_available_before_the_session_trades() {
+        let levels = levels_with((1100.0, 1000.0), None, true);
+        let bias = daily_bias(&levels);
+
+        assert_eq!(bias.previous_mid, Some(1050.0));
+        assert!(bias.known_at_open);
+        assert!(bias.open_above_mid.is_none());
+        assert_eq!(bias.read, BiasRead::Indetermine);
+    }
+
+    #[test]
+    fn which_extreme_came_first_follows_the_timestamps() {
+        // Both sides taken; the high printed first.
+        let up = levels_with((1100.0, 1000.0), Some((1050.0, 1120.0, 990.0, 1050.0)), true);
+        assert_eq!(daily_bias(&up).first_taken, Some("PDH"));
+
+        let down = levels_with((1100.0, 1000.0), Some((1050.0, 1120.0, 990.0, 1050.0)), false);
+        assert_eq!(daily_bias(&down).first_taken, Some("PDL"));
+    }
+
+    // --- Weekly profile -----------------------------------------------------
+
+    #[test]
+    fn the_week_reports_which_day_made_the_high_and_the_low() {
+        // Week of Monday 2026-07-13. Tuesday is the widest to the upside,
+        // Thursday the lowest.
+        let mut candles = Vec::new();
+        candles.extend(session(date("2026-07-13"), 60, 1050.0, 1000.0));
+        candles.extend(session(date("2026-07-14"), 60, 1200.0, 1010.0));
+        candles.extend(session(date("2026-07-15"), 60, 1100.0, 1020.0));
+        candles.extend(session(date("2026-07-16"), 60, 1090.0, 900.0));
+        candles.sort_by_key(|c| c.ts);
+
+        let weekly = weekly_profile(&candles, date("2026-07-16"), Some(100.0));
+
+        assert_eq!(weekly.week_start, date("2026-07-13"));
+        assert_eq!(weekly.sessions, 4);
+        assert_eq!(weekly.today_weekday, "jeudi");
+        assert_eq!(weekly.high, Some(1200.0));
+        assert_eq!(weekly.high_weekday, Some("mardi"));
+        assert_eq!(weekly.low, Some(900.0));
+        assert_eq!(weekly.low_weekday, Some("jeudi"));
+        assert_eq!(weekly.range, Some(300.0));
+        assert_eq!(weekly.range_pct_of_adr, Some(300.0));
+    }
+
+    #[test]
+    fn the_week_starts_on_monday_whatever_the_day_asked_for() {
+        for (day, name) in [
+            ("2026-07-13", "lundi"),
+            ("2026-07-15", "mercredi"),
+            ("2026-07-17", "vendredi"),
+        ] {
+            let weekly = weekly_profile(&[], date(day), None);
+            assert_eq!(weekly.week_start, date("2026-07-13"));
+            assert_eq!(weekly.today_weekday, name);
+        }
     }
 
     /// The whole point of computing the ADR on `date - 1` and back: a violent

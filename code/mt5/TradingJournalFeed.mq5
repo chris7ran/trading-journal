@@ -47,7 +47,9 @@ input string InpApiUrl       = "https://your-host.your-tailnet.ts.net:8443"; // 
 input string InpIngestToken  = "";                                        // X-Ingest-Token
 input string InpSymbols      = "GER40,US30,NAS100,XAUUSD";                 // Symboles, séparés par des virgules
 input int    InpBackfillDays = 60;                                        // Historique au 1er lancement (jours)
+input bool   InpForceBackfill = false;                                    // Ignorer l'état serveur et tout renvoyer
 input int    InpChunkSize    = 500;                                       // Bougies par requête
+input int    InpMaxChunksPerCycle = 20;                                   // Requêtes max par cycle (évite de figer MT5)
 input int    InpTimerSeconds = 60;                                        // Fréquence de vérification (s)
 input int    InpTimeoutMs    = 15000;                                     // Timeout HTTP (ms)
 input bool   InpVerbose      = true;                                      // Journalisation détaillée
@@ -57,6 +59,7 @@ string   g_symbols[];
 datetime g_last_utc[];      // last candle time (UTC) successfully sent, per symbol
 string   g_base_url = "";
 long     g_offset   = 0;    // seconds to ADD to server time to obtain UTC
+bool     g_bootstrapped = false;
 
 //--- constants --------------------------------------------------------------
 #define M5_SECONDS       300
@@ -107,11 +110,24 @@ int OnInit()
    RefreshOffset();
    PrintFormat("[feed] démarré · %d symbole(s) · décalage serveur -> UTC = %+d s", n, (int)g_offset);
 
-   if(!Preflight())
+   if(InpForceBackfill)
+     {
+      // Deliberately skip the resume handshake: every symbol restarts from
+      // `InpBackfillDays` ago. Use this after widening the history window —
+      // otherwise the EA resumes from what the server already holds and the
+      // new, longer window is silently ignored. Safe to run at any time:
+      // ingestion is idempotent, so re-sent candles overwrite themselves.
+      PrintFormat("[feed] RENVOI FORCÉ : %d jours par symbole, état serveur ignoré.", InpBackfillDays);
+     }
+   else if(!Preflight())
+     {
       Print("[feed] ATTENTION : le préambule a échoué. L'EA réessaiera à chaque cycle.");
+     }
 
-   SyncAll(true);
-   EventSetTimer((int)MathMax(10, InpTimerSeconds));
+   // The first sync is done from the timer, not here. A 730-day backfill is
+   // thousands of requests; running it inside OnInit would block the terminal's
+   // UI thread for minutes and look like a freeze.
+   EventSetTimer(5);
    return(INIT_SUCCEEDED);
   }
 
@@ -126,7 +142,15 @@ void OnDeinit(const int reason)
 void OnTimer()
   {
    RefreshOffset();
-   SyncAll(false);
+   SyncAll(!g_bootstrapped);
+
+   if(!g_bootstrapped)
+     {
+      g_bootstrapped = true;
+      // Back to the configured cadence now that the first pass is under way.
+      EventKillTimer();
+      EventSetTimer((int)MathMax(10, InpTimerSeconds));
+     }
   }
 
 //+------------------------------------------------------------------+
@@ -223,8 +247,20 @@ void SyncSymbol(const int index, const bool initial)
 
    int sent = 0;
    int i = 0;
+   int cycles = 0;
    while(i < copied)
      {
+      // Spread a long backfill over several timer ticks. Sending thousands of
+      // chunks in one pass would keep the terminal busy for minutes; the
+      // remainder is simply picked up on the next cycle, resuming from
+      // g_last_utc.
+      if(InpMaxChunksPerCycle > 0 && cycles >= InpMaxChunksPerCycle)
+        {
+         PrintFormat("[feed] %s : pause après %d requêtes, suite au prochain cycle.", symbol, cycles);
+         break;
+        }
+      cycles++;
+
       int batch = 0;
       string items = "";
       datetime last_in_batch = 0;

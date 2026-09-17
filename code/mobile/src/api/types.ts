@@ -285,6 +285,31 @@ export interface LevelSymbol {
   last: string; // ISO UTC
 }
 
+// --- Chart candles (GET /candles) -------------------------------------------
+
+/**
+ * One chart bar, folded server-side from the M5 feed.
+ *
+ * `bars` is how many M5 candles went into it — the current bar of the session
+ * is partial by definition, and a thin one usually means a feed gap rather
+ * than a quiet hour.
+ */
+export interface ChartBar {
+  ts: string; // ISO UTC, the bar's opening instant
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  bars: number;
+}
+
+export interface CandlesResponse {
+  symbol: string;
+  /** `M5` | `M15` | `M30` | `H1` | `H4` — echoed back as served. */
+  timeframe: string;
+  candles: ChartBar[];
+}
+
 // --- Morning brief (GET /brief) ---------------------------------------------
 
 /**
@@ -308,23 +333,56 @@ export interface RangeStats {
   asia_pct_of_median: number | null;
 }
 
-export type TrendDirection = 'up' | 'down' | 'range' | 'unknown';
+/** Descriptive reading of the session against the previous day's midpoint. */
+export type BiasRead =
+  | 'continuation_haussiere'
+  | 'continuation_baissiere'
+  | 'reversal_depuis_le_haut'
+  | 'reversal_depuis_le_bas'
+  | 'zero_cinq_traverse'
+  | 'indetermine';
 
-export interface TrendRead {
-  direction: TrendDirection;
+/**
+ * Daily bias built on the midpoint of the previous session's range.
+ *
+ * Only `open_above_mid` is knowable *before* the session. Everything else
+ * describes a day that has already traded and belongs to the review, not to a
+ * decision — a day whose low never came back under the midpoint is by
+ * construction a directional up-day, so "it reached the previous high" is a
+ * tautology, not a forecast.
+ */
+export interface DailyBias {
+  previous_mid: number | null;
+  previous_high: number | null;
+  previous_low: number | null;
+  /** The only forward-looking field here. */
+  open_above_mid: boolean | null;
+  known_at_open: boolean;
+  held_above_mid: boolean | null;
+  held_below_mid: boolean | null;
+  closed_above_mid: boolean | null;
+  touched_pdh: boolean | null;
+  touched_pdl: boolean | null;
+  /** `"PDH"` or `"PDL"` — which extreme was reached first. */
+  first_taken: string | null;
+  reversal_from_high: boolean | null;
+  reversal_from_low: boolean | null;
+  read: BiasRead;
+}
+
+/** Which session made the week's high and low, and how wide the week is. */
+export interface WeeklyProfile {
+  week_start: string;
   sessions: number;
-  sma: number | null;
-  /**
-   * Last close of the lookback window — the session *before* the requested
-   * date, not today's close. The trend is read on completed sessions only.
-   */
-  window_last_close: number | null;
-  close_vs_sma_pct_of_adr: number | null;
-  net_move: number | null;
-  /** Net move measured in average days. Above 1 is what makes it a trend. */
-  net_move_in_adr: number | null;
-  higher_highs_5: number;
-  lower_lows_5: number;
+  today_weekday: string;
+  high: number | null;
+  high_day: string | null;
+  high_weekday: string | null;
+  low: number | null;
+  low_day: string | null;
+  low_weekday: string | null;
+  range: number | null;
+  range_pct_of_adr: number | null;
 }
 
 export interface LevelDistance {
@@ -350,9 +408,51 @@ export interface DailyBrief {
   /** Latest close available — what the distances are measured from. */
   reference_price: number | null;
   stats: RangeStats;
-  trend: TrendRead;
+  bias: DailyBias;
+  weekly: WeeklyProfile;
   distances: LevelDistance[];
   observations: Observation[];
   /** Levels travel with the brief so one screen needs one request. */
   levels: DailyLevels;
+}
+
+// --- Brief archive (GET /brief/history, /brief/review) ----------------------
+
+/**
+ * One archived snapshot, as frozen before a session. The payload is stored
+ * verbatim server-side; this is the summary used for listing.
+ */
+export interface SnapshotSummary {
+  symbol: string;
+  date: string;
+  /** `pre_london`, `pre_ny` or `manual`. */
+  session: string;
+  captured_at: string;
+  bias_read: BiasRead | null;
+  open_above_mid: boolean | null;
+  previous_mid: number | null;
+  adr: number | null;
+  day_pct_of_adr: number | null;
+  asia_pct_of_median: number | null;
+}
+
+export interface TradeTally {
+  count: number;
+  pnl: number;
+}
+
+/**
+ * A day of the review: what the brief said before the session, and what was
+ * actually traded during it.
+ *
+ * Days with trades but no snapshot are included on purpose — they are the
+ * "before the brief existed" baseline.
+ */
+export interface ReviewDay {
+  date: string;
+  snapshots: SnapshotSummary[];
+  /** Trades on the reviewed instrument. Zero unless a symbol filter is set. */
+  trades_symbol: TradeTally;
+  /** Every trade that day — the figure that answers "am I trading more?". */
+  trades_all: TradeTally;
 }

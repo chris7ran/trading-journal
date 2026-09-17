@@ -326,3 +326,70 @@ Once the EA has run, the levels for a given day:
 curl -s -H "Authorization: Bearer $TOKEN" \
      "https://<host>.<tailnet>.ts.net:8443/levels?symbol=GER40&date=$(date +%F)" | jq
 ```
+
+---
+
+## Archiving the brief
+
+A brief is only worth keeping if you can later ask whether it helped — and the
+honest version of that question is *did it make me trade more?* Answering it
+needs what was known **before** the session stored next to what was actually
+done during it.
+
+`POST /brief/snapshot` freezes the current brief for every fed symbol. The
+payload is stored verbatim and never recomputed: the rules will be refined over
+time, and a brief rebuilt under new rules would quietly become a different
+document, making any comparison with a past decision meaningless.
+
+### Two captures a day, not one
+
+The instruments do not open together — the DAX at 09:00 Paris, the US indices at
+15:30. A single morning snapshot would be six hours stale for three of the four
+symbols. So both slots run, every symbol in each, each row tagged with its
+session.
+
+The times are deliberately *before* each open: 07:45 leaves the Asian range
+complete and London untouched, 15:00 catches the European morning before New
+York starts. A capture taken after the open would already contain what the
+session did, which is exactly what it must not know.
+
+### Install
+
+```bash
+chmod +x code/backend/deploy/snapshot-brief.sh
+mkdir -p ~/logs
+timedatectl                     # confirm the server is on Europe/Paris
+crontab -e
+```
+
+```cron
+45 7  * * 1-5 /home/chris/stacks/journal/code/backend/deploy/snapshot-brief.sh pre_london >> /home/chris/logs/brief-snapshot.log 2>&1
+0  15 * * 1-5 /home/chris/stacks/journal/code/backend/deploy/snapshot-brief.sh pre_ny      >> /home/chris/logs/brief-snapshot.log 2>&1
+```
+
+Weekdays only. Captures are `INSERT OR IGNORE` on `(symbol, date, session)`, so
+a retry after a failure is safe and a duplicate run changes nothing.
+
+### Check it
+
+```bash
+# Force a capture now
+./code/backend/deploy/snapshot-brief.sh manual
+
+# What has been archived
+curl -sH "Authorization: Bearer $TOKEN" \
+     'http://127.0.0.1:8090/brief/history?limit=20' | jq
+
+# One frozen brief, read back verbatim
+curl -sH "Authorization: Bearer $TOKEN" \
+     'http://127.0.0.1:8090/brief/archived?symbol=GER40&date=2026-09-04&session=pre_london' | jq
+
+# The brief next to the trades actually taken
+curl -sH "Authorization: Bearer $TOKEN" \
+     'http://127.0.0.1:8090/brief/review?symbol=GER40&from=2026-09-01' | jq
+```
+
+`/brief/review` deliberately computes no verdict. Averages by bias reading would
+need each reading to occur fifteen-odd times before they mean anything — call it
+three months. Producing them sooner would just be noise wearing the costume of
+insight.

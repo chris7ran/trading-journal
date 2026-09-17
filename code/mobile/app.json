@@ -40,7 +40,21 @@
         }
       ],
       "expo-font",
-      "@react-native-community/datetimepicker"
+      "@react-native-community/datetimepicker",
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "deploymentTarget": "26.0"
+          }
+        }
+      ],
+      [
+        "./plugins/withMinimumIosDeploymentTarget",
+        {
+          "deploymentTarget": "26.0"
+        }
+      ]
     ]
   }
 }

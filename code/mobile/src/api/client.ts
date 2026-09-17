@@ -6,6 +6,8 @@
 
 import type {
   Account,
+  CandlesResponse,
+  ChartBar,
   CotEntry,
   DailyBrief,
   DailyLevels,
@@ -16,6 +18,7 @@ import type {
   LoginResponse,
   NewAccount,
   NewsItem,
+  ReviewDay,
   NewSetup,
   NewTrade,
   PropRule,
@@ -189,6 +192,39 @@ export function createApi(baseUrl: string, token?: string | null) {
       request<DailyBrief>(
         `/brief?symbol=${encodeURIComponent(symbol)}${date ? `&date=${encodeURIComponent(date)}` : ''}`,
       ),
+
+    /**
+     * The archived briefs next to the trades actually taken, day by day.
+     *
+     * `from` defaults to 30 days back server-side. Passing a symbol also fills
+     * `trades_symbol`; without one, only the day's total is meaningful.
+     */
+    getReview: (symbol?: string, from?: string, to?: string) => {
+      const params = new URLSearchParams();
+      if (symbol) params.set('symbol', symbol);
+      if (from) params.set('from', from);
+      if (to) params.set('to', to);
+      return request<ReviewDay[]>(`/brief/review?${params.toString()}`);
+    },
+
+    /**
+     * Chart bars for one symbol, folded up from the M5 feed.
+     *
+     * `days` is calendar days of history *before* `date`; the app asks for a
+     * fortnight once and slices it locally, so changing the visible window
+     * costs no round trip.
+     */
+    getCandles: (
+      symbol: string,
+      date?: string,
+      tf: string = 'H1',
+      days?: number,
+    ): Promise<ChartBar[]> => {
+      const params = new URLSearchParams({ symbol, tf });
+      if (date) params.set('date', date);
+      if (days !== undefined) params.set('days', String(days));
+      return request<CandlesResponse>(`/candles?${params.toString()}`).then((r) => r.candles ?? []);
+    },
 
     /** Symbols the MT5 feed has actually delivered — drives the picker. */
     getLevelSymbols: () =>

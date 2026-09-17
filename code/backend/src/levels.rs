@@ -216,6 +216,15 @@ pub fn compute(symbol: &str, date: NaiveDate, candles: &[Candle]) -> DailyLevels
     }
 }
 
+/// The Paris calendar day `date`, as a half-open UTC interval.
+///
+/// The trading day is a Paris day, not a UTC one, and the boundary moves with
+/// DST — so anything that wants "exactly this session, nothing after it" has to
+/// ask for it here rather than slicing UTC midnights by hand.
+pub fn utc_day_bounds(date: NaiveDate) -> (DateTime<Utc>, DateTime<Utc>) {
+    local_window(date, DAY_TZ, (0, 0), (24, 0))
+}
+
 /// UTC range a caller must fetch from the database to be able to call
 /// [`compute`] for `date`.
 ///

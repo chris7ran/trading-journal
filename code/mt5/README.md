@@ -34,9 +34,16 @@ same host as the API, reachable over the private tailnet.
 | `InpApiUrl` | *(placeholder)* | Base URL, no trailing slash. Must match the whitelist entry character for character. |
 | `InpIngestToken` | *(empty)* | Same value as `INGEST_TOKEN` in the server's `api.env`. |
 | `InpSymbols` | `GER40,US30,NAS100,XAUUSD` | Exact names from Market Watch. Broker suffixes matter (`GER40.cash` ≠ `GER40`). |
-| `InpBackfillDays` | `60` | History fetched on first run. Ignored for symbols the server already has. |
+| `InpBackfillDays` | `60` | History fetched on first run. Ignored for symbols the server already has, unless `InpForceBackfill` is set. |
+| `InpForceBackfill` | `false` | Skip the resume handshake and re-send the whole window. Needed after *widening* `InpBackfillDays` — otherwise the EA resumes from what the server already holds and the longer window is silently ignored. Set back to `false` afterwards. |
 | `InpChunkSize` | `500` | Candles per request. The server rejects batches above 2000. |
+| `InpMaxChunksPerCycle` | `20` | Requests per symbol per cycle. Spreads a long backfill over several minutes instead of blocking the terminal. `0` disables the cap. |
 | `InpTimerSeconds` | `60` | How often to look for newly closed bars. |
+
+For a long backfill, also check **Tools → Options → Charts → Max bars in chart**
+is set high (or unlimited): MT5 will not hand `CopyRates` more bars than it
+keeps. The first cycles may log `CopyRates n'a rien renvoyé` while the terminal
+downloads history from the broker — that is expected, and it resolves itself.
 
 ## Time handling — the part that actually matters
 

@@ -875,16 +875,43 @@ async fn brief_measures_the_day_against_the_average_daily_range() {
 }
 
 #[tokio::test]
-async fn brief_reports_a_flat_market_as_a_range_not_a_trend() {
+async fn brief_reads_the_session_against_the_previous_midpoint() {
     let app = test_app().await;
     let token = login(&app).await;
     seed_candles(&app, quiet_then_violent("US30")).await;
 
     let body = get_brief(&app, &token, "US30", "2026-07-30").await;
 
-    // Every session closed at the same price: no net travel at all.
-    assert_eq!(body["trend"]["direction"], "range");
-    assert_eq!(body["trend"]["net_move"], 0.0);
+    // Previous session ran 1000 -> 1100, so the 0.5 sits at 1050. Today opened
+    // at 1000 and its high reached 1500, taking the previous high on the way.
+    assert_eq!(body["bias"]["previous_mid"], 1050.0);
+    assert_eq!(body["bias"]["open_above_mid"], false);
+    assert_eq!(body["bias"]["touched_pdh"], true);
+    assert_eq!(body["bias"]["first_taken"], "PDH");
+
+    // Closing back under the midpoint after taking the previous high is the
+    // reversal signature, and it outranks where the session opened.
+    assert_eq!(body["bias"]["read"], "reversal_depuis_le_haut");
+
+    // The midpoint is also offered as a level to mark on the chart.
+    let distances = body["distances"].as_array().unwrap();
+    assert!(distances.iter().any(|d| d["key"] == "previous_mid"));
+}
+
+#[tokio::test]
+async fn brief_reports_which_weekday_made_the_week_extremes() {
+    let app = test_app().await;
+    let token = login(&app).await;
+    seed_candles(&app, quiet_then_violent("NAS100")).await;
+
+    // 2026-07-30 is a Thursday; the week opened on Monday 2026-07-27.
+    let body = get_brief(&app, &token, "NAS100", "2026-07-30").await;
+
+    assert_eq!(body["weekly"]["today_weekday"], "jeudi");
+    assert_eq!(body["weekly"]["week_start"], "2026-07-27");
+    // Thursday is the 500-point session, so it holds the weekly high.
+    assert_eq!(body["weekly"]["high_weekday"], "jeudi");
+    assert_eq!(body["weekly"]["high"], 1500.0);
 }
 
 #[tokio::test]
@@ -900,7 +927,7 @@ async fn brief_stays_silent_rather_than_averaging_three_sessions() {
     let body = get_brief(&app, &token, "XAUUSD", "2026-07-30").await;
 
     assert!(body["stats"]["adr"].is_null(), "no ADR on a single session");
-    assert_eq!(body["trend"]["direction"], "unknown");
+    assert_eq!(body["bias"]["read"], "indetermine");
 }
 
 #[tokio::test]
@@ -916,4 +943,266 @@ async fn brief_rejects_a_malformed_date() {
         app.oneshot(req).await.unwrap().status(),
         StatusCode::BAD_REQUEST
     );
+}
+
+// --- Brief archive ----------------------------------------------------------
+
+async fn snapshot(app: &axum::Router, body: Value) -> axum::response::Response {
+    let req = Request::builder()
+        .method("POST")
+        .uri("/brief/snapshot")
+        .header("content-type", "application/json")
+        .header("x-ingest-token", TEST_INGEST_TOKEN)
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    app.clone().oneshot(req).await.unwrap()
+}
+
+async fn authed_get(app: &axum::Router, token: &str, uri: &str) -> Value {
+    let req = Request::builder()
+        .uri(uri)
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK, "GET {uri}");
+    body_json(res).await
+}
+
+#[tokio::test]
+async fn snapshot_requires_the_machine_token() {
+    let app = test_app().await;
+    let token = login(&app).await;
+
+    // No credential at all.
+    let req = Request::builder()
+        .method("POST")
+        .uri("/brief/snapshot")
+        .header("content-type", "application/json")
+        .body(Body::from(json!({ "session": "pre_london" }).to_string()))
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    // A user JWT is not a machine credential.
+    let req = Request::builder()
+        .method("POST")
+        .uri("/brief/snapshot")
+        .header("content-type", "application/json")
+        .header("x-ingest-token", token)
+        .body(Body::from(json!({ "session": "pre_london" }).to_string()))
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn snapshot_rejects_an_unknown_session() {
+    let app = test_app().await;
+    seed_candles(&app, quiet_then_violent("GER40")).await;
+
+    let res = snapshot(&app, json!({ "session": "midnight", "date": "2026-07-30" })).await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+}
+
+/// The whole point of the archive: what was captured before the session must
+/// never be replaced by a later view of the same day.
+#[tokio::test]
+async fn the_first_capture_of_a_session_wins() {
+    let app = test_app().await;
+    let token = login(&app).await;
+    seed_candles(&app, quiet_then_violent("GER40")).await;
+
+    let first = snapshot(
+        &app,
+        json!({ "session": "pre_london", "date": "2026-07-30", "symbols": ["GER40"] }),
+    )
+    .await;
+    assert_eq!(first.status(), StatusCode::OK);
+    let body = body_json(first).await;
+    assert_eq!(body["captured"], json!(["GER40"]));
+    assert!(body["already_present"].as_array().unwrap().is_empty());
+
+    let second = snapshot(
+        &app,
+        json!({ "session": "pre_london", "date": "2026-07-30", "symbols": ["GER40"] }),
+    )
+    .await;
+    let body = body_json(second).await;
+    assert!(body["captured"].as_array().unwrap().is_empty());
+    assert_eq!(body["already_present"], json!(["GER40"]));
+
+    // Still exactly one row.
+    let history = authed_get(&app, &token, "/brief/history?symbol=GER40").await;
+    assert_eq!(history.as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn the_two_daily_sessions_are_archived_separately() {
+    let app = test_app().await;
+    let token = login(&app).await;
+    seed_candles(&app, quiet_then_violent("GER40")).await;
+
+    for session in ["pre_london", "pre_ny"] {
+        let res = snapshot(
+            &app,
+            json!({ "session": session, "date": "2026-07-30", "symbols": ["GER40"] }),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    let history = authed_get(&app, &token, "/brief/history?symbol=GER40").await;
+    let rows = history.as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+
+    let sessions: Vec<&str> = rows.iter().map(|r| r["session"].as_str().unwrap()).collect();
+    assert!(sessions.contains(&"pre_london"));
+    assert!(sessions.contains(&"pre_ny"));
+}
+
+#[tokio::test]
+async fn an_archived_brief_is_read_back_verbatim() {
+    let app = test_app().await;
+    let token = login(&app).await;
+    seed_candles(&app, quiet_then_violent("GER40")).await;
+
+    snapshot(
+        &app,
+        json!({ "session": "pre_london", "date": "2026-07-30", "symbols": ["GER40"] }),
+    )
+    .await;
+
+    let archived = authed_get(
+        &app,
+        &token,
+        "/brief/archived?symbol=GER40&date=2026-07-30&session=pre_london",
+    )
+    .await;
+
+    assert_eq!(archived["archived"], true);
+    assert_eq!(archived["session"], "pre_london");
+    // The frozen payload carries the whole brief, levels included.
+    assert_eq!(archived["brief"]["stats"]["adr"], 100.0);
+    assert_eq!(archived["brief"]["bias"]["previous_mid"], 1050.0);
+    assert_eq!(archived["brief"]["levels"]["day"]["high"], 1500.0);
+}
+
+#[tokio::test]
+async fn reading_back_a_day_that_was_never_captured_is_a_404() {
+    let app = test_app().await;
+    let token = login(&app).await;
+
+    let req = Request::builder()
+        .uri("/brief/archived?symbol=GER40&date=2026-07-30&session=pre_london")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        app.oneshot(req).await.unwrap().status(),
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn the_review_puts_the_brief_next_to_the_trades_of_that_day() {
+    let app = test_app().await;
+    let token = login(&app).await;
+    seed_account(&app, &token).await;
+    seed_candles(&app, quiet_then_violent("GER40")).await;
+
+    snapshot(
+        &app,
+        json!({ "session": "pre_london", "date": "2026-07-30", "symbols": ["GER40"] }),
+    )
+    .await;
+
+    // Two trades that day, one on the reviewed instrument.
+    for (symbol, pnl, ticket) in [("GER40", 120.0, "R-1"), ("US30", -40.0, "R-2")] {
+        let req = Request::builder()
+            .method("POST")
+            .uri("/trades")
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::from(
+                json!({
+                    "symbol": symbol,
+                    "pnl": pnl,
+                    "open_time": "2026-07-30T09:15:00",
+                    "mt5_ticket": ticket
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(req).await.unwrap().status(),
+            StatusCode::CREATED
+        );
+    }
+
+    let review = authed_get(
+        &app,
+        &token,
+        "/brief/review?symbol=GER40&from=2026-07-01&to=2026-07-31",
+    )
+    .await;
+
+    let day = review
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["date"] == "2026-07-30")
+        .expect("the captured day is in the review");
+
+    assert_eq!(day["snapshots"].as_array().unwrap().len(), 1);
+    // Every trade of the day counts towards "am I trading more?"...
+    assert_eq!(day["trades_all"]["count"], 2);
+    assert_eq!(day["trades_all"]["pnl"], 80.0);
+    // ...but only the reviewed instrument counts towards its own tally.
+    assert_eq!(day["trades_symbol"]["count"], 1);
+    assert_eq!(day["trades_symbol"]["pnl"], 120.0);
+}
+
+/// Days traded without a brief are the baseline. Hiding them would flatter the
+/// comparison by only ever showing days the brief covered.
+#[tokio::test]
+async fn the_review_keeps_days_that_have_trades_but_no_brief() {
+    let app = test_app().await;
+    let token = login(&app).await;
+    seed_account(&app, &token).await;
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/trades")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::from(
+            json!({
+                "symbol": "GER40",
+                "pnl": 250.0,
+                "open_time": "2026-07-15T10:00:00",
+                "mt5_ticket": "B-1"
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::CREATED
+    );
+
+    let review = authed_get(&app, &token, "/brief/review?from=2026-07-01&to=2026-07-31").await;
+    let day = review
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["date"] == "2026-07-15")
+        .expect("a traded day with no snapshot still appears");
+
+    assert!(day["snapshots"].as_array().unwrap().is_empty());
+    assert_eq!(day["trades_all"]["count"], 1);
 }
