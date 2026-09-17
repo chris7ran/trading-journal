@@ -35,13 +35,7 @@ const MAX_DAYS: i64 = 120;
 /// moves with DST, which is [`crate::levels`]' business — folding it here on
 /// UTC hour boundaries would quietly produce a different daily candle from the
 /// one the levels are computed against.
-const TIMEFRAMES: &[(&str, i64)] = &[
-    ("M5", 5),
-    ("M15", 15),
-    ("M30", 30),
-    ("H1", 60),
-    ("H4", 240),
-];
+const TIMEFRAMES: &[(&str, i64)] = &[("M5", 5), ("M15", 15), ("M30", 30), ("H1", 60), ("H4", 240)];
 
 #[derive(Debug, Deserialize)]
 pub struct CandlesQuery {
@@ -163,7 +157,9 @@ mod tests {
 
     fn candle(ts: &str, open: f64, high: f64, low: f64, close: f64) -> Candle {
         Candle {
-            ts: DateTime::parse_from_rfc3339(ts).unwrap().with_timezone(&Utc),
+            ts: DateTime::parse_from_rfc3339(ts)
+                .unwrap()
+                .with_timezone(&Utc),
             open,
             high,
             low,
