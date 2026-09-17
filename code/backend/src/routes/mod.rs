@@ -2,6 +2,7 @@
 
 pub mod accounts;
 pub mod archive;
+pub mod candles;
 pub mod health;
 pub mod import;
 pub mod ingest;
@@ -75,6 +76,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/macro/news", get(market::news))
         .route("/macro/economy", get(market::economy))
         .route("/macro/cot", get(market::cot))
+        // Chart bars for the levels screen, folded from the same M5 feed the
+        // levels themselves are computed from.
+        .route("/candles", get(candles::get_candles))
         // Static segment before any future `/levels/:something` param route.
         .route("/levels/symbols", get(levels::list_symbols))
         .route("/levels", get(levels::get_levels))

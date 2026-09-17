@@ -29,6 +29,7 @@ import { useFocusEffect } from '@react-navigation/native';
 
 import type {
   BiasRead,
+  ChartBar,
   DailyBias,
   DailyBrief,
   LevelSymbol,
@@ -41,8 +42,10 @@ import { ApiError } from '../api/client';
 import { useApi } from '../hooks/useApi';
 import { useAuth } from '../auth/AuthContext';
 import { glow, moneySigned, neon } from '../theme-neon';
+import { NeonLevelsChart } from '../components/neon/NeonLevelsChart';
 import {
   buildLadder,
+  KIND_COLOR,
   formatPoints,
   formatPrice,
   humanDate,
@@ -56,13 +59,6 @@ import {
   type LadderRow,
 } from '../utils/levels';
 
-const KIND_COLOR: Record<LadderRow['kind'], string> = {
-  day: neon.cyan,
-  previous: neon.violet,
-  orb: neon.green,
-  session: neon.muted,
-};
-
 export default function LevelsScreen() {
   const api = useApi();
   const { signOut } = useAuth();
@@ -71,6 +67,7 @@ export default function LevelsScreen() {
   const [symbol, setSymbol] = useState<string | null>(null);
   const [date, setDate] = useState<string>(todayParis());
   const [brief, setBrief] = useState<DailyBrief | null>(null);
+  const [bars, setBars] = useState<ChartBar[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -109,7 +106,15 @@ export default function LevelsScreen() {
         if (target !== date) setDate(target);
       }
 
-      setBrief(await api.getBrief(chosen.symbol, target));
+      // Side by side: the chart is useless without the levels and the levels
+      // read better with the chart, so neither waits on the other. A backend
+      // that does not serve /candles yet still gets a working screen.
+      const [nextBrief, nextBars] = await Promise.all([
+        api.getBrief(chosen.symbol, target),
+        api.getCandles(chosen.symbol, target, 'H1', 14).catch(() => [] as ChartBar[]),
+      ]);
+      setBrief(nextBrief);
+      setBars(nextBars);
 
       // Only fetched when the history view is on screen: it walks two months
       // of snapshots and trades, and the day view never needs it.
@@ -254,6 +259,13 @@ export default function LevelsScreen() {
         />
       ) : (
         <>
+          {/* The levels, drawn where they actually sit. Fed the same rows as
+              the ladder below, so "tout afficher" expands both. */}
+          <View style={[styles.card, glow(neon.cyan, 16, 0.12)]}>
+            <Text style={styles.lbl}>Graphique H1 · niveaux</Text>
+            <NeonLevelsChart bars={bars} levels={visible} decimals={decimals} />
+          </View>
+
           {/* Context: is this move already big? */}
           {brief ? (
             <ContextCard

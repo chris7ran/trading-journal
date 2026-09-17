@@ -6,6 +6,8 @@
 
 import type {
   Account,
+  CandlesResponse,
+  ChartBar,
   CotEntry,
   DailyBrief,
   DailyLevels,
@@ -203,6 +205,25 @@ export function createApi(baseUrl: string, token?: string | null) {
       if (from) params.set('from', from);
       if (to) params.set('to', to);
       return request<ReviewDay[]>(`/brief/review?${params.toString()}`);
+    },
+
+    /**
+     * Chart bars for one symbol, folded up from the M5 feed.
+     *
+     * `days` is calendar days of history *before* `date`; the app asks for a
+     * fortnight once and slices it locally, so changing the visible window
+     * costs no round trip.
+     */
+    getCandles: (
+      symbol: string,
+      date?: string,
+      tf: string = 'H1',
+      days?: number,
+    ): Promise<ChartBar[]> => {
+      const params = new URLSearchParams({ symbol, tf });
+      if (date) params.set('date', date);
+      if (days !== undefined) params.set('days', String(days));
+      return request<CandlesResponse>(`/candles?${params.toString()}`).then((r) => r.candles ?? []);
     },
 
     /** Symbols the MT5 feed has actually delivered — drives the picker. */

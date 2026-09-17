@@ -285,6 +285,31 @@ export interface LevelSymbol {
   last: string; // ISO UTC
 }
 
+// --- Chart candles (GET /candles) -------------------------------------------
+
+/**
+ * One chart bar, folded server-side from the M5 feed.
+ *
+ * `bars` is how many M5 candles went into it — the current bar of the session
+ * is partial by definition, and a thin one usually means a feed gap rather
+ * than a quiet hour.
+ */
+export interface ChartBar {
+  ts: string; // ISO UTC, the bar's opening instant
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  bars: number;
+}
+
+export interface CandlesResponse {
+  symbol: string;
+  /** `M5` | `M15` | `M30` | `H1` | `H4` — echoed back as served. */
+  timeframe: string;
+  candles: ChartBar[];
+}
+
 // --- Morning brief (GET /brief) ---------------------------------------------
 
 /**

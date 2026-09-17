@@ -6,6 +6,7 @@
 // Paris time.
 
 import type { DailyLevels, LevelWindow, Sweep } from '../api/types';
+import { neon } from '../theme-neon';
 
 /** One line of the price ladder. */
 export interface LadderRow {
@@ -21,6 +22,31 @@ export interface LadderRow {
   sweptAt: string | null;
   /** Levels shown before the user expands the ladder. */
   essential: boolean;
+}
+
+/**
+ * Colour per ladder kind. Lives here rather than in either consumer so that a
+ * level is the same colour in the list and on the chart — reading one against
+ * the other is the whole point of showing both.
+ */
+export const KIND_COLOR: Record<LadderRow['kind'], string> = {
+  day: neon.cyan,
+  previous: neon.violet,
+  orb: neon.green,
+  session: neon.muted,
+};
+
+/**
+ * Compact name for a level on a chart, where there is room for two words.
+ *
+ * `label` spells the side out in prose ("PDH — haut de la veille"); the head of
+ * it is enough, except for the windows whose name says nothing about which
+ * edge this is.
+ */
+export function chartTag(row: LadderRow): string {
+  const head = row.label.split(' — ')[0];
+  const carriesSide = /haut|bas|pdh|pdl|0,5/i.test(head);
+  return carriesSide ? head : `${head} ${row.side === 'high' ? 'H' : 'B'}`;
 }
 
 // --- Time -------------------------------------------------------------------
