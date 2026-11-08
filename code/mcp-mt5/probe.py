@@ -129,7 +129,7 @@ def main() -> int:
         return 1
 
     result = reply.get("result", {})
-    # FastMCP returns the value twice: once as text for models that cannot
+    # The server returns the value twice: once as text for models that cannot
     # read structured output, once parsed. Prefer the parsed form.
     payload = result.get("structuredContent")
     if payload is None:

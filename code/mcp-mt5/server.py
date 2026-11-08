@@ -31,6 +31,11 @@ from typing import Any
 import config
 import worker
 
+#: Reported to clients in the initialize result. The SDK no longer substitutes
+#: its own version when this is omitted, so an unset value would leave the
+#: server anonymous in logs and client UIs.
+SERVER_VERSION = "0.1.0"
+
 #: A terminal can take a while to launch and log in on a cold VM.
 START_TIMEOUT_SECONDS = 90
 
@@ -169,7 +174,7 @@ class Bridge:
 
 
 def register_tools(mcp: Any, bridge: Bridge) -> None:
-    """Attach the read-only tool set to a FastMCP instance."""
+    """Attach the read-only tool set to an `MCPServer` instance."""
 
     @mcp.tool()
     async def list_accounts() -> dict:
@@ -434,13 +439,34 @@ def main() -> int:
         print(str(exc), file=sys.stderr)
         return 2
 
-    from mcp.server.fastmcp import FastMCP  # imported late: config errors first
+    # Imported late so a configuration mistake is reported before the SDK is
+    # even loaded — a missing terminal path should not be preceded by an
+    # import traceback.
+    #
+    # SDK 2.x: `FastMCP` was renamed `MCPServer`, and the transport parameters
+    # (`host`, `port`, …) moved off the constructor onto `run()` and the app
+    # factories. The tool decorators are unchanged.
+    from mcp.server.mcpserver import MCPServer
 
-    mcp = FastMCP("trading-journal-mt5", host=args.host, port=args.port)
+    mcp = MCPServer(
+        "trading-journal-mt5",
+        instructions=(
+            "Pont en lecture seule vers un ou plusieurs terminaux MetaTrader 5. "
+            "Appelez list_accounts en premier : toutes les autres fonctions "
+            "prennent un alias de compte issu de cette liste. Aucun outil ne "
+            "passe, ne modifie ni n'annule d'ordre."
+        ),
+        version=SERVER_VERSION,
+    )
     register_tools(mcp, bridge)
 
     import uvicorn
 
+    # Wrapped, not mounted: the token guard forwards every non-HTTP scope
+    # untouched, so the MCP app's own lifespan still runs under uvicorn and
+    # starts its session manager. Mounting it inside a Starlette app would
+    # swallow that lifespan and the server would accept connections it could
+    # never answer.
     app = RequireToken(mcp.streamable_http_app(), token)
     print(
         f"pont MCP MT5 sur http://{args.host}:{args.port}/mcp — "
