@@ -76,8 +76,25 @@ def load(path: Path | None = None) -> list[Account]:
             f"copiez accounts.example.toml en accounts.toml et renseignez-la."
         )
 
-    with path.open("rb") as handle:
-        raw = tomllib.load(handle)
+    # Read as text with `utf-8-sig` rather than handing the file object to
+    # `tomllib.load`. Every native Windows editor — Notepad, and PowerShell's
+    # own `Set-Content -Encoding UTF8` — writes a byte-order mark, and
+    # `tomllib` rejects it with "Invalid statement at line 1, column 1", which
+    # points at the first line of a file whose first line is perfectly valid.
+    # `utf-8-sig` strips the mark when present and changes nothing when it is
+    # not.
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise ConfigError(
+            f"{path} n'est pas un fichier UTF-8 : {exc}\n"
+            f"réenregistrez-le en UTF-8 (sans BOM de préférence)."
+        ) from exc
+
+    try:
+        raw = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigError(f"{path} : TOML invalide — {exc}") from exc
 
     entries = raw.get("account")
     if not entries:
