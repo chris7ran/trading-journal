@@ -132,7 +132,7 @@ pub struct Account {
     /// one. This is what `POST /ingest/trades` resolves on, so at most one
     /// account may carry a given login (enforced by a partial unique index).
     pub mt5_login: Option<String>,
-    /// Broker server the terminal connects to, e.g. `XMGlobalMU-MT5 2`.
+    /// Broker server the terminal connects to, e.g. `BrokerDemo-MT5 1`.
     /// Informational: two brokers can hand out the same account number, and
     /// without the server name a login alone does not identify a terminal.
     pub mt5_server: Option<String>,

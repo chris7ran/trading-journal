@@ -1218,10 +1218,10 @@ async fn seed_bound_account(app: &axum::Router, token: &str, login: &str) -> Str
         .header("authorization", format!("Bearer {token}"))
         .body(Body::from(
             json!({
-                "name": "XM démo",
+                "name": "Compte démo",
                 "broker": "XM",
                 "mt5_login": login,
-                "mt5_server": "XMGlobalMU-MT5 2"
+                "mt5_server": "BrokerDemo-MT5 1"
             })
             .to_string(),
         ))
@@ -1270,7 +1270,7 @@ async fn ingesting_trades_needs_the_machine_token_not_the_jwt() {
 
     let res = app
         .clone()
-        .oneshot(ingest_trades_request(None, open_leg("169494134", "1")))
+        .oneshot(ingest_trades_request(None, open_leg("100000001", "1")))
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
@@ -1279,7 +1279,7 @@ async fn ingesting_trades_needs_the_machine_token_not_the_jwt() {
         .clone()
         .oneshot(ingest_trades_request(
             Some(&jwt),
-            open_leg("169494134", "1"),
+            open_leg("100000001", "1"),
         ))
         .await
         .unwrap();
@@ -1298,7 +1298,7 @@ async fn ingesting_trades_refuses_a_login_no_account_claims() {
         .clone()
         .oneshot(ingest_trades_request(
             Some(TEST_INGEST_TOKEN),
-            open_leg("169494134", "21455031"),
+            open_leg("100000001", "21455031"),
         ))
         .await
         .unwrap();
@@ -1309,13 +1309,13 @@ async fn ingesting_trades_refuses_a_login_no_account_claims() {
 async fn replaying_a_trade_updates_it_instead_of_duplicating_it() {
     let app = test_app().await;
     let token = login(&app).await;
-    let account_id = seed_bound_account(&app, &token, "169494134").await;
+    let account_id = seed_bound_account(&app, &token, "100000001").await;
 
     let res = app
         .clone()
         .oneshot(ingest_trades_request(
             Some(TEST_INGEST_TOKEN),
-            open_leg("169494134", "21455031"),
+            open_leg("100000001", "21455031"),
         ))
         .await
         .unwrap();
@@ -1327,7 +1327,7 @@ async fn replaying_a_trade_updates_it_instead_of_duplicating_it() {
 
     // The position closes: same ticket, now with an exit.
     let closed = json!({
-        "login": "169494134",
+        "login": "100000001",
         "trades": [{
             "ticket": "21455031",
             "symbol": "GER40Cash#",
@@ -1358,7 +1358,7 @@ async fn replaying_a_trade_updates_it_instead_of_duplicating_it() {
     let trades = body_json(app.clone().oneshot(req).await.unwrap()).await;
     let trades = trades.as_array().unwrap();
     assert_eq!(trades.len(), 1, "one ticket must stay one row");
-    assert_eq!(trades[0]["mt5_ticket"], "169494134:21455031");
+    assert_eq!(trades[0]["mt5_ticket"], "100000001:21455031");
     assert_eq!(trades[0]["plan_id"], "plan-abc");
     assert_eq!(trades[0]["pnl"], 670.0);
     assert_eq!(trades[0]["close_price"], 26400.0);
@@ -1369,12 +1369,12 @@ async fn replaying_a_trade_updates_it_instead_of_duplicating_it() {
 async fn replaying_a_trade_never_overwrites_the_review() {
     let app = test_app().await;
     let token = login(&app).await;
-    seed_bound_account(&app, &token, "169494134").await;
+    seed_bound_account(&app, &token, "100000001").await;
 
     app.clone()
         .oneshot(ingest_trades_request(
             Some(TEST_INGEST_TOKEN),
-            open_leg("169494134", "21455031"),
+            open_leg("100000001", "21455031"),
         ))
         .await
         .unwrap();
@@ -1411,7 +1411,7 @@ async fn replaying_a_trade_never_overwrites_the_review() {
     app.clone()
         .oneshot(ingest_trades_request(
             Some(TEST_INGEST_TOKEN),
-            open_leg("169494134", "21455031"),
+            open_leg("100000001", "21455031"),
         ))
         .await
         .unwrap();
@@ -1431,7 +1431,7 @@ async fn replaying_a_trade_never_overwrites_the_review() {
 async fn the_same_broker_ticket_on_two_terminals_makes_two_trades() {
     let app = test_app().await;
     let token = login(&app).await;
-    seed_bound_account(&app, &token, "169494134").await;
+    seed_bound_account(&app, &token, "100000001").await;
 
     // A second bound account, on another terminal.
     let req = Request::builder()
@@ -1440,7 +1440,7 @@ async fn the_same_broker_ticket_on_two_terminals_makes_two_trades() {
         .header("content-type", "application/json")
         .header("authorization", format!("Bearer {token}"))
         .body(Body::from(
-            json!({ "name": "Autre", "mt5_login": "990100" }).to_string(),
+            json!({ "name": "Autre", "mt5_login": "100000002" }).to_string(),
         ))
         .unwrap();
     assert_eq!(
@@ -1448,7 +1448,7 @@ async fn the_same_broker_ticket_on_two_terminals_makes_two_trades() {
         StatusCode::CREATED
     );
 
-    for login_number in ["169494134", "990100"] {
+    for login_number in ["100000001", "100000002"] {
         let res = app
             .clone()
             .oneshot(ingest_trades_request(
@@ -1474,7 +1474,7 @@ async fn the_same_broker_ticket_on_two_terminals_makes_two_trades() {
 async fn two_accounts_cannot_claim_the_same_mt5_login() {
     let app = test_app().await;
     let token = login(&app).await;
-    seed_bound_account(&app, &token, "169494134").await;
+    seed_bound_account(&app, &token, "100000001").await;
 
     let req = Request::builder()
         .method("POST")
@@ -1482,7 +1482,7 @@ async fn two_accounts_cannot_claim_the_same_mt5_login() {
         .header("content-type", "application/json")
         .header("authorization", format!("Bearer {token}"))
         .body(Body::from(
-            json!({ "name": "Doublon", "mt5_login": "169494134" }).to_string(),
+            json!({ "name": "Doublon", "mt5_login": "100000001" }).to_string(),
         ))
         .unwrap();
     assert_eq!(
@@ -1502,7 +1502,7 @@ async fn an_mt5_login_must_be_a_number() {
         .header("content-type", "application/json")
         .header("authorization", format!("Bearer {token}"))
         .body(Body::from(
-            json!({ "name": "Bancal", "mt5_login": "169494134:9" }).to_string(),
+            json!({ "name": "Bancal", "mt5_login": "100000001:9" }).to_string(),
         ))
         .unwrap();
     assert_eq!(
@@ -1515,7 +1515,7 @@ async fn an_mt5_login_must_be_a_number() {
 async fn unbinding_an_account_frees_the_login_for_another() {
     let app = test_app().await;
     let token = login(&app).await;
-    let first = seed_bound_account(&app, &token, "169494134").await;
+    let first = seed_bound_account(&app, &token, "100000001").await;
 
     // An empty string clears the binding; omitting the field would keep it.
     let req = Request::builder()
@@ -1535,7 +1535,7 @@ async fn unbinding_an_account_frees_the_login_for_another() {
         .header("content-type", "application/json")
         .header("authorization", format!("Bearer {token}"))
         .body(Body::from(
-            json!({ "name": "Repreneur", "mt5_login": "169494134" }).to_string(),
+            json!({ "name": "Repreneur", "mt5_login": "100000001" }).to_string(),
         ))
         .unwrap();
     assert_eq!(
@@ -1551,18 +1551,18 @@ async fn closing_a_position_keeps_the_stop_it_was_opened_with() {
     // uncomputable after the fact.
     let app = test_app().await;
     let token = login(&app).await;
-    seed_bound_account(&app, &token, "169494134").await;
+    seed_bound_account(&app, &token, "100000001").await;
 
     app.clone()
         .oneshot(ingest_trades_request(
             Some(TEST_INGEST_TOKEN),
-            open_leg("169494134", "21455031"),
+            open_leg("100000001", "21455031"),
         ))
         .await
         .unwrap();
 
     let closed = json!({
-        "login": "169494134",
+        "login": "100000001",
         "trades": [{
             "ticket": "21455031",
             "symbol": "GER40Cash#",

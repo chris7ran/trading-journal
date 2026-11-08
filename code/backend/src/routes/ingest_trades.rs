@@ -10,7 +10,7 @@
 //!   `accounts.mt5_login`. An account that declares no login is unreachable
 //!   through this endpoint, which is what keeps the imported Scale FX history
 //!   and every hand-entered trade out of reach.
-//! * Stored tickets are prefixed with the login (`169494134:21455031`). Ticket
+//! * Stored tickets are prefixed with the login (`100000001:21455031`). Ticket
 //!   numbers restart per account at some brokers, so the bare number is not
 //!   unique across terminals; the prefix makes the existing uniqueness
 //!   constraint on `mt5_ticket` meaningful again, and it bounds an upsert to
@@ -434,14 +434,14 @@ mod tests {
 
     #[test]
     fn prefixes_the_ticket_with_the_login() {
-        let row = prepare(&trade("21455031"), "169494134").unwrap();
-        assert_eq!(row.mt5_ticket, "169494134:21455031");
+        let row = prepare(&trade("21455031"), "100000001").unwrap();
+        assert_eq!(row.mt5_ticket, "100000001:21455031");
     }
 
     #[test]
     fn the_same_ticket_on_two_terminals_stays_distinct() {
-        let a = prepare(&trade("5001"), "169494134").unwrap();
-        let b = prepare(&trade("5001"), "990100").unwrap();
+        let a = prepare(&trade("5001"), "100000001").unwrap();
+        let b = prepare(&trade("5001"), "100000002").unwrap();
         assert_ne!(a.mt5_ticket, b.mt5_ticket);
     }
 
@@ -476,9 +476,9 @@ mod tests {
 
     #[test]
     fn rejects_a_login_that_could_forge_another_terminals_key() {
-        assert!(clean_login("169494134:9").is_err());
+        assert!(clean_login("100000001:9").is_err());
         assert!(clean_login("").is_err());
-        assert!(clean_login("169494134").is_ok());
+        assert!(clean_login("100000001").is_ok());
     }
 
     #[test]

@@ -146,7 +146,7 @@ export interface Account {
   is_funded: boolean;
   /** MT5 account number of the terminal feeding this account, if any. */
   mt5_login: string | null;
-  /** Broker server that terminal connects to, e.g. `XMGlobalMU-MT5 2`. */
+  /** Broker server that terminal connects to, e.g. `BrokerDemo-MT5 1`. */
   mt5_server: string | null;
   created_at: string;
 }
