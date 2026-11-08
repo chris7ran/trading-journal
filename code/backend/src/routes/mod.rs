@@ -9,6 +9,7 @@ pub mod ingest;
 pub mod ingest_trades;
 pub mod levels;
 pub mod market;
+pub mod mcp;
 pub mod setups;
 pub mod stats;
 pub mod trades;
@@ -68,6 +69,7 @@ pub fn build_router(state: AppState) -> Router {
             "/accounts/:id/rules",
             get(accounts::get_rules).put(accounts::upsert_rules),
         )
+        .route("/accounts/:id/prop-status", get(accounts::prop_status))
         .route(
             "/setups",
             get(setups::list_setups).post(setups::create_setup),
@@ -120,6 +122,19 @@ pub fn build_router(state: AppState) -> Router {
             ingest::require_ingest_token,
         ));
 
+    // The journal as an MCP server, for an assistant reading over the
+    // tailnet. A third credential rather than the JWT: that one expires, and
+    // a connector left in place for weeks would break every time it did.
+    //
+    // Read-only, and on its own router so that stays visible — the day a
+    // write tool is considered, it has to be added here, in the open.
+    let mcp = Router::new()
+        .route("/mcp", post(mcp::handle).get(mcp::stream_not_supported))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            mcp::require_mcp_token,
+        ));
+
     // Public routes (no auth).
     let public = Router::new().route("/health", get(health::health)).route(
         "/auth/login",
@@ -131,6 +146,7 @@ pub fn build_router(state: AppState) -> Router {
     public
         .merge(protected)
         .merge(machine)
+        .merge(mcp)
         .layer(TraceLayer::new_for_http())
         .layer(cors)
         .with_state(state)

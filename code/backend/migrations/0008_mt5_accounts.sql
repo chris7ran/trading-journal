@@ -7,8 +7,8 @@
 
 -- Which MT5 terminal feeds this account ---------------------------------------
 --
--- `mt5_login` is the account number shown by the terminal (e.g. 169494134) and
--- `mt5_server` the broker server it connects to (e.g. "XMGlobalMU-MT5 2").
+-- `mt5_login` is the account number shown by the terminal (e.g. 100000001) and
+-- `mt5_server` the broker server it connects to (e.g. "BrokerDemo-MT5 1").
 -- Together they are what `accounts.toml` keys a portable terminal on, and what
 -- `POST /ingest/trades` uses to decide which journal account a batch belongs
 -- to. The sender never names an account id: it states the login it is logged

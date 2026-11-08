@@ -11,5 +11,6 @@ pub mod db;
 pub mod error;
 pub mod levels;
 pub mod models;
+pub mod prop;
 pub mod routes;
 pub mod state;

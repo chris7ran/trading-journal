@@ -1,0 +1,19 @@
+# Pont MCP MT5 — Windows uniquement, Python 3.11 ou plus récent
+# (la configuration est lue avec tomllib, entré dans la bibliothèque standard
+# en 3.11).
+
+# Pilotage du terminal. Paquet Windows uniquement : il parle au terminal par
+# IPC local, il n'existe pas de portage Linux ou macOS.
+MetaTrader5>=5.0.45
+
+# Protocole MCP et serveur ASGI.
+#
+# 2.x impérativement : la 1.x exposait la classe serveur sous le nom FastMCP
+# dans mcp.server.fastmcp, renommée MCPServer dans mcp.server.mcpserver, avec
+# les paramètres de transport déplacés du constructeur vers run() et les
+# fabriques d'application. server.py vise la 2.x.
+#
+# uvicorn est déclaré explicitement bien que mcp le tire déjà, parce que
+# server.py l'importe lui-même.
+mcp>=2.0
+uvicorn>=0.30

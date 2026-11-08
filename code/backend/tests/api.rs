@@ -19,6 +19,7 @@ use trading_journal_api::state::AppState;
 
 const TEST_PASSWORD: &str = "correct horse battery staple";
 const TEST_INGEST_TOKEN: &str = "test-ingest-token";
+const TEST_MCP_TOKEN: &str = "test-mcp-token";
 
 async fn test_app() -> axum::Router {
     let options = SqliteConnectOptions::from_str("sqlite::memory:")
@@ -46,6 +47,7 @@ async fn test_app() -> axum::Router {
         jwt_ttl_hours: 1,
         cors_allowed_origins: "*".into(),
         ingest_token: TEST_INGEST_TOKEN.into(),
+        mcp_token: TEST_MCP_TOKEN.into(),
     };
 
     build_router(AppState::new(pool, config))
@@ -1218,10 +1220,10 @@ async fn seed_bound_account(app: &axum::Router, token: &str, login: &str) -> Str
         .header("authorization", format!("Bearer {token}"))
         .body(Body::from(
             json!({
-                "name": "XM démo",
+                "name": "Compte démo",
                 "broker": "XM",
                 "mt5_login": login,
-                "mt5_server": "XMGlobalMU-MT5 2"
+                "mt5_server": "BrokerDemo-MT5 1"
             })
             .to_string(),
         ))
@@ -1270,7 +1272,7 @@ async fn ingesting_trades_needs_the_machine_token_not_the_jwt() {
 
     let res = app
         .clone()
-        .oneshot(ingest_trades_request(None, open_leg("169494134", "1")))
+        .oneshot(ingest_trades_request(None, open_leg("100000001", "1")))
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
@@ -1279,7 +1281,7 @@ async fn ingesting_trades_needs_the_machine_token_not_the_jwt() {
         .clone()
         .oneshot(ingest_trades_request(
             Some(&jwt),
-            open_leg("169494134", "1"),
+            open_leg("100000001", "1"),
         ))
         .await
         .unwrap();
@@ -1298,7 +1300,7 @@ async fn ingesting_trades_refuses_a_login_no_account_claims() {
         .clone()
         .oneshot(ingest_trades_request(
             Some(TEST_INGEST_TOKEN),
-            open_leg("169494134", "21455031"),
+            open_leg("100000001", "21455031"),
         ))
         .await
         .unwrap();
@@ -1309,13 +1311,13 @@ async fn ingesting_trades_refuses_a_login_no_account_claims() {
 async fn replaying_a_trade_updates_it_instead_of_duplicating_it() {
     let app = test_app().await;
     let token = login(&app).await;
-    let account_id = seed_bound_account(&app, &token, "169494134").await;
+    let account_id = seed_bound_account(&app, &token, "100000001").await;
 
     let res = app
         .clone()
         .oneshot(ingest_trades_request(
             Some(TEST_INGEST_TOKEN),
-            open_leg("169494134", "21455031"),
+            open_leg("100000001", "21455031"),
         ))
         .await
         .unwrap();
@@ -1327,7 +1329,7 @@ async fn replaying_a_trade_updates_it_instead_of_duplicating_it() {
 
     // The position closes: same ticket, now with an exit.
     let closed = json!({
-        "login": "169494134",
+        "login": "100000001",
         "trades": [{
             "ticket": "21455031",
             "symbol": "GER40Cash#",
@@ -1358,7 +1360,7 @@ async fn replaying_a_trade_updates_it_instead_of_duplicating_it() {
     let trades = body_json(app.clone().oneshot(req).await.unwrap()).await;
     let trades = trades.as_array().unwrap();
     assert_eq!(trades.len(), 1, "one ticket must stay one row");
-    assert_eq!(trades[0]["mt5_ticket"], "169494134:21455031");
+    assert_eq!(trades[0]["mt5_ticket"], "100000001:21455031");
     assert_eq!(trades[0]["plan_id"], "plan-abc");
     assert_eq!(trades[0]["pnl"], 670.0);
     assert_eq!(trades[0]["close_price"], 26400.0);
@@ -1369,12 +1371,12 @@ async fn replaying_a_trade_updates_it_instead_of_duplicating_it() {
 async fn replaying_a_trade_never_overwrites_the_review() {
     let app = test_app().await;
     let token = login(&app).await;
-    seed_bound_account(&app, &token, "169494134").await;
+    seed_bound_account(&app, &token, "100000001").await;
 
     app.clone()
         .oneshot(ingest_trades_request(
             Some(TEST_INGEST_TOKEN),
-            open_leg("169494134", "21455031"),
+            open_leg("100000001", "21455031"),
         ))
         .await
         .unwrap();
@@ -1411,7 +1413,7 @@ async fn replaying_a_trade_never_overwrites_the_review() {
     app.clone()
         .oneshot(ingest_trades_request(
             Some(TEST_INGEST_TOKEN),
-            open_leg("169494134", "21455031"),
+            open_leg("100000001", "21455031"),
         ))
         .await
         .unwrap();
@@ -1431,7 +1433,7 @@ async fn replaying_a_trade_never_overwrites_the_review() {
 async fn the_same_broker_ticket_on_two_terminals_makes_two_trades() {
     let app = test_app().await;
     let token = login(&app).await;
-    seed_bound_account(&app, &token, "169494134").await;
+    seed_bound_account(&app, &token, "100000001").await;
 
     // A second bound account, on another terminal.
     let req = Request::builder()
@@ -1440,7 +1442,7 @@ async fn the_same_broker_ticket_on_two_terminals_makes_two_trades() {
         .header("content-type", "application/json")
         .header("authorization", format!("Bearer {token}"))
         .body(Body::from(
-            json!({ "name": "Autre", "mt5_login": "990100" }).to_string(),
+            json!({ "name": "Autre", "mt5_login": "100000002" }).to_string(),
         ))
         .unwrap();
     assert_eq!(
@@ -1448,7 +1450,7 @@ async fn the_same_broker_ticket_on_two_terminals_makes_two_trades() {
         StatusCode::CREATED
     );
 
-    for login_number in ["169494134", "990100"] {
+    for login_number in ["100000001", "100000002"] {
         let res = app
             .clone()
             .oneshot(ingest_trades_request(
@@ -1474,7 +1476,7 @@ async fn the_same_broker_ticket_on_two_terminals_makes_two_trades() {
 async fn two_accounts_cannot_claim_the_same_mt5_login() {
     let app = test_app().await;
     let token = login(&app).await;
-    seed_bound_account(&app, &token, "169494134").await;
+    seed_bound_account(&app, &token, "100000001").await;
 
     let req = Request::builder()
         .method("POST")
@@ -1482,7 +1484,7 @@ async fn two_accounts_cannot_claim_the_same_mt5_login() {
         .header("content-type", "application/json")
         .header("authorization", format!("Bearer {token}"))
         .body(Body::from(
-            json!({ "name": "Doublon", "mt5_login": "169494134" }).to_string(),
+            json!({ "name": "Doublon", "mt5_login": "100000001" }).to_string(),
         ))
         .unwrap();
     assert_eq!(
@@ -1502,7 +1504,7 @@ async fn an_mt5_login_must_be_a_number() {
         .header("content-type", "application/json")
         .header("authorization", format!("Bearer {token}"))
         .body(Body::from(
-            json!({ "name": "Bancal", "mt5_login": "169494134:9" }).to_string(),
+            json!({ "name": "Bancal", "mt5_login": "100000001:9" }).to_string(),
         ))
         .unwrap();
     assert_eq!(
@@ -1515,7 +1517,7 @@ async fn an_mt5_login_must_be_a_number() {
 async fn unbinding_an_account_frees_the_login_for_another() {
     let app = test_app().await;
     let token = login(&app).await;
-    let first = seed_bound_account(&app, &token, "169494134").await;
+    let first = seed_bound_account(&app, &token, "100000001").await;
 
     // An empty string clears the binding; omitting the field would keep it.
     let req = Request::builder()
@@ -1535,7 +1537,7 @@ async fn unbinding_an_account_frees_the_login_for_another() {
         .header("content-type", "application/json")
         .header("authorization", format!("Bearer {token}"))
         .body(Body::from(
-            json!({ "name": "Repreneur", "mt5_login": "169494134" }).to_string(),
+            json!({ "name": "Repreneur", "mt5_login": "100000001" }).to_string(),
         ))
         .unwrap();
     assert_eq!(
@@ -1551,18 +1553,18 @@ async fn closing_a_position_keeps_the_stop_it_was_opened_with() {
     // uncomputable after the fact.
     let app = test_app().await;
     let token = login(&app).await;
-    seed_bound_account(&app, &token, "169494134").await;
+    seed_bound_account(&app, &token, "100000001").await;
 
     app.clone()
         .oneshot(ingest_trades_request(
             Some(TEST_INGEST_TOKEN),
-            open_leg("169494134", "21455031"),
+            open_leg("100000001", "21455031"),
         ))
         .await
         .unwrap();
 
     let closed = json!({
-        "login": "169494134",
+        "login": "100000001",
         "trades": [{
             "ticket": "21455031",
             "symbol": "GER40Cash#",
@@ -1590,4 +1592,453 @@ async fn closing_a_position_keeps_the_stop_it_was_opened_with() {
     assert_eq!(trades[0]["open_price"], 26300.0);
     assert_eq!(trades[0]["plan_id"], "plan-abc");
     assert_eq!(trades[0]["close_price"], 26400.0);
+}
+
+// --- Prop firm status --------------------------------------------------------
+
+/// Create an account with a starting balance, and return its id.
+async fn seed_funded_account(app: &axum::Router, token: &str, balance: f64) -> String {
+    let req = Request::builder()
+        .method("POST")
+        .uri("/accounts")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::from(
+            json!({ "name": "Challenge", "balance": balance, "currency": "USD" }).to_string(),
+        ))
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::CREATED);
+    body_json(res).await["id"].as_str().unwrap().to_string()
+}
+
+async fn add_closed_trade(
+    app: &axum::Router,
+    token: &str,
+    account_id: &str,
+    close_time: &str,
+    pnl: f64,
+) {
+    let req = Request::builder()
+        .method("POST")
+        .uri("/trades")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::from(
+            json!({
+                "account_id": account_id,
+                "symbol": "GER40",
+                "direction": "LONG",
+                "open_time": close_time,
+                "close_time": close_time,
+                "pnl": pnl
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::CREATED
+    );
+}
+
+#[tokio::test]
+async fn prop_status_without_a_starting_balance_explains_itself() {
+    let app = test_app().await;
+    let token = login(&app).await;
+    // seed_account creates one with no balance at all.
+    let account_id = seed_account(&app, &token).await;
+
+    let req = Request::builder()
+        .uri(format!("/accounts/{account_id}/prop-status"))
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    let error = body_json(res).await["error"].as_str().unwrap().to_string();
+    assert!(error.contains("solde de départ"), "got: {error}");
+}
+
+#[tokio::test]
+async fn prop_status_measures_drawdown_from_the_peak() {
+    let app = test_app().await;
+    let token = login(&app).await;
+    let account_id = seed_funded_account(&app, &token, 100_000.0).await;
+
+    let req = Request::builder()
+        .method("PUT")
+        .uri(format!("/accounts/{account_id}/rules"))
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::from(
+            json!({
+                "daily_drawdown_max": 0.05,
+                "global_drawdown_max": 0.10,
+                "profit_target": 0.10,
+                "consistency_rule_pct": 0.20
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    assert_eq!(app.clone().oneshot(req).await.unwrap().status(), StatusCode::OK);
+
+    add_closed_trade(&app, &token, &account_id, "2026-11-02T10:00:00", 8_000.0).await;
+    add_closed_trade(&app, &token, &account_id, "2026-11-03T10:00:00", -5_000.0).await;
+
+    let req = Request::builder()
+        .uri(format!("/accounts/{account_id}/prop-status"))
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let status = body_json(res).await;
+
+    assert_eq!(status["peak_equity"], 108_000.0);
+    assert_eq!(status["current_equity"], 103_000.0);
+    assert_eq!(status["current_drawdown"], 5_000.0);
+    assert_eq!(status["drawdown_used"], 0.5);
+    assert_eq!(status["daily_limit"], 5_000.0);
+    // Neither trade closed today, so today's allowance is untouched.
+    assert_eq!(status["today_pnl"], 0.0);
+    assert_eq!(status["best_day"], "2026-11-02");
+}
+
+// --- Grouped statistics ------------------------------------------------------
+
+#[tokio::test]
+async fn stats_group_by_setup_splits_the_population() {
+    let app = test_app().await;
+    let token = login(&app).await;
+    let account_id = seed_funded_account(&app, &token, 100_000.0).await;
+
+    for (setup, pnl) in [("ORB", 300.0), ("ORB", -100.0), ("Sweep", 500.0)] {
+        let req = Request::builder()
+            .method("POST")
+            .uri("/trades")
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::from(
+                json!({
+                    "account_id": account_id,
+                    "symbol": "GER40",
+                    "open_time": "2026-11-02T10:00:00",
+                    "close_time": "2026-11-02T11:00:00",
+                    "setup_tag": setup,
+                    "pnl": pnl
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(req).await.unwrap().status(),
+            StatusCode::CREATED
+        );
+    }
+
+    let req = Request::builder()
+        .uri("/trades/stats?group_by=setup")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let stats = body_json(app.clone().oneshot(req).await.unwrap()).await;
+
+    assert_eq!(stats["group_by"], "setup");
+    let groups = stats["groups"].as_array().unwrap();
+    assert_eq!(groups.len(), 2);
+    // Ordered by P&L: Sweep (500) before ORB (200).
+    assert_eq!(groups[0]["key"], "Sweep");
+    assert_eq!(groups[0]["trades"], 1);
+    assert_eq!(groups[0]["profit_factor"], Value::Null, "pas de perte");
+    assert_eq!(groups[1]["key"], "ORB");
+    assert_eq!(groups[1]["trades"], 2);
+    assert_eq!(groups[1]["wins"], 1);
+    assert_eq!(groups[1]["losses"], 1);
+    assert_eq!(groups[1]["pnl"], 200.0);
+    assert_eq!(groups[1]["win_rate"], 0.5);
+    assert_eq!(groups[1]["profit_factor"], 3.0);
+
+    // The old field keeps its old meaning.
+    assert_eq!(stats["by_symbol"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn stats_without_group_by_are_unchanged() {
+    let app = test_app().await;
+    let token = login(&app).await;
+
+    let req = Request::builder()
+        .uri("/trades/stats")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let stats = body_json(app.clone().oneshot(req).await.unwrap()).await;
+    assert!(stats["groups"].as_array().unwrap().is_empty());
+    assert_eq!(stats["group_by"], Value::Null);
+}
+
+#[tokio::test]
+async fn an_unknown_group_by_lists_the_valid_ones() {
+    let app = test_app().await;
+    let token = login(&app).await;
+
+    let req = Request::builder()
+        .uri("/trades/stats?group_by=semaine")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    let error = body_json(res).await["error"].as_str().unwrap().to_string();
+    assert!(error.contains("week"), "got: {error}");
+}
+
+// --- MCP ---------------------------------------------------------------------
+
+fn mcp_request(token: Option<&str>, body: Value) -> Request<Body> {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri("/mcp")
+        .header("content-type", "application/json");
+    if let Some(t) = token {
+        builder = builder.header("authorization", format!("Bearer {t}"));
+    }
+    builder.body(Body::from(body.to_string())).unwrap()
+}
+
+fn rpc(id: i64, method: &str, params: Value) -> Value {
+    json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params })
+}
+
+async fn mcp_call(app: &axum::Router, tool: &str, arguments: Value) -> Value {
+    let res = app
+        .clone()
+        .oneshot(mcp_request(
+            Some(TEST_MCP_TOKEN),
+            rpc(1, "tools/call", json!({ "name": tool, "arguments": arguments })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    body_json(res).await
+}
+
+#[tokio::test]
+async fn mcp_refuses_a_missing_or_wrong_token() {
+    let app = test_app().await;
+
+    for token in [None, Some("pas-le-bon")] {
+        let res = app
+            .clone()
+            .oneshot(mcp_request(token, rpc(1, "tools/list", json!({}))))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+}
+
+#[tokio::test]
+async fn mcp_does_not_accept_the_user_jwt() {
+    // The three credentials are separate on purpose: a JWT must not open the
+    // MCP surface, and the MCP token must not open the user API.
+    let app = test_app().await;
+    let jwt = login(&app).await;
+    let res = app
+        .clone()
+        .oneshot(mcp_request(Some(&jwt), rpc(1, "tools/list", json!({}))))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+
+    // And the reverse.
+    let req = Request::builder()
+        .uri("/trades")
+        .header("authorization", format!("Bearer {TEST_MCP_TOKEN}"))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn mcp_initialize_announces_the_server() {
+    let app = test_app().await;
+    let res = app
+        .clone()
+        .oneshot(mcp_request(
+            Some(TEST_MCP_TOKEN),
+            rpc(
+                1,
+                "initialize",
+                json!({ "protocolVersion": "2025-06-18", "capabilities": {} }),
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body = body_json(res).await;
+    assert_eq!(body["jsonrpc"], "2.0");
+    assert_eq!(body["id"], 1);
+    assert_eq!(body["result"]["protocolVersion"], "2025-06-18");
+    assert_eq!(body["result"]["serverInfo"]["name"], "trading-journal");
+    assert!(body["result"]["capabilities"]["tools"].is_object());
+}
+
+#[tokio::test]
+async fn mcp_notifications_get_no_body() {
+    // A notification carries no id; answering one would leave a client that
+    // correlates on id waiting for a reply to a question it never asked.
+    let app = test_app().await;
+    let res = app
+        .clone()
+        .oneshot(mcp_request(
+            Some(TEST_MCP_TOKEN),
+            json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::ACCEPTED);
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    assert!(bytes.is_empty());
+}
+
+#[tokio::test]
+async fn mcp_lists_its_tools() {
+    let app = test_app().await;
+    let res = app
+        .clone()
+        .oneshot(mcp_request(
+            Some(TEST_MCP_TOKEN),
+            rpc(2, "tools/list", json!({})),
+        ))
+        .await
+        .unwrap();
+    let body = body_json(res).await;
+    let tools = body["result"]["tools"].as_array().unwrap();
+    let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+    for expected in [
+        "list_accounts",
+        "get_trades",
+        "get_stats",
+        "get_prop_status",
+        "get_brief",
+    ] {
+        assert!(names.contains(&expected), "{expected} manquant dans {names:?}");
+    }
+}
+
+#[tokio::test]
+async fn mcp_unknown_method_is_a_protocol_error() {
+    let app = test_app().await;
+    let res = app
+        .clone()
+        .oneshot(mcp_request(
+            Some(TEST_MCP_TOKEN),
+            rpc(3, "tools/invoke", json!({})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK, "JSON-RPC répond en 200");
+    let body = body_json(res).await;
+    assert_eq!(body["error"]["code"], -32601);
+}
+
+#[tokio::test]
+async fn mcp_unknown_tool_is_reported_to_the_model_not_to_the_transport() {
+    // A failing tool comes back as a successful result carrying isError, so
+    // the model can read the message and correct itself.
+    let app = test_app().await;
+    let body = mcp_call(&app, "supprime_tout", json!({})).await;
+    assert!(body["error"].is_null());
+    assert_eq!(body["result"]["isError"], true);
+    let text = body["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("supprime_tout"));
+}
+
+#[tokio::test]
+async fn mcp_reads_accounts_and_grouped_stats() {
+    let app = test_app().await;
+    let token = login(&app).await;
+    let account_id = seed_funded_account(&app, &token, 100_000.0).await;
+    add_closed_trade(&app, &token, &account_id, "2026-11-02T10:00:00", 400.0).await;
+    add_closed_trade(&app, &token, &account_id, "2026-11-03T10:00:00", -150.0).await;
+
+    let body = mcp_call(&app, "list_accounts", json!({})).await;
+    let result = &body["result"];
+    assert_eq!(result["isError"], false);
+    assert_eq!(result["structuredContent"]["count"], 1);
+    // The text block mirrors the structured one, for clients that read only text.
+    assert!(result["content"][0]["text"].as_str().unwrap().contains("Challenge"));
+
+    let body = mcp_call(&app, "get_stats", json!({ "group_by": "day" })).await;
+    let stats = &body["result"]["structuredContent"];
+    assert_eq!(stats["total_trades"], 2);
+    assert_eq!(stats["group_by"], "day");
+    let groups = stats["groups"].as_array().unwrap();
+    assert_eq!(groups.len(), 2);
+    // Chronological, because a month-by-month table sorted by profit is unreadable.
+    assert_eq!(groups[0]["key"], "2026-11-02");
+    assert_eq!(groups[1]["key"], "2026-11-03");
+}
+
+#[tokio::test]
+async fn mcp_tool_arguments_are_validated_like_the_rest() {
+    let app = test_app().await;
+
+    // Required argument missing.
+    let body = mcp_call(&app, "get_prop_status", json!({})).await;
+    assert_eq!(body["result"]["isError"], true);
+
+    // Unknown grouping, refused by the same whitelist the REST route uses.
+    let body = mcp_call(&app, "get_stats", json!({ "group_by": "lune" })).await;
+    assert_eq!(body["result"]["isError"], true);
+    let text = body["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("week"), "l'erreur doit lister les valeurs valides");
+}
+
+#[tokio::test]
+async fn mcp_has_no_tool_that_writes() {
+    // The guard that matters: this surface is read-only, and a write tool
+    // added by accident should fail here rather than in production.
+    let app = test_app().await;
+    let res = app
+        .clone()
+        .oneshot(mcp_request(
+            Some(TEST_MCP_TOKEN),
+            rpc(9, "tools/list", json!({})),
+        ))
+        .await
+        .unwrap();
+    let body = body_json(res).await;
+    let forbidden = [
+        "create", "update", "delete", "set_", "put_", "post_", "write", "import", "execute",
+        "place", "close", "modify", "supprim", "cree", "créer", "modifi",
+    ];
+    for tool in body["result"]["tools"].as_array().unwrap() {
+        let name = tool["name"].as_str().unwrap().to_lowercase();
+        for verb in forbidden {
+            assert!(
+                !name.contains(verb),
+                "'{name}' ressemble à une écriture : /mcp doit rester en lecture seule"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn mcp_does_not_pretend_to_stream() {
+    let app = test_app().await;
+    let req = Request::builder()
+        .method("GET")
+        .uri("/mcp")
+        .header("authorization", format!("Bearer {TEST_MCP_TOKEN}"))
+        .body(Body::empty())
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    // 405 and not 404: the endpoint exists, it just takes no GET.
+    assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
 }

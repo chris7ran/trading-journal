@@ -22,7 +22,9 @@ import type {
   NewSetup,
   NewTrade,
   PropRule,
+  PropStatus,
   Setup,
+  StatsGroupBy,
   Trade,
   TradeFilters,
   TradeStats,
@@ -129,8 +131,11 @@ export function createApi(baseUrl: string, token?: string | null) {
     deleteTrade: (id: string) =>
       request<void>(`/trades/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
-    /** Aggregated analytics. */
-    getStats: (filters?: Partial<TradeFilters>) =>
+    /**
+     * Aggregated analytics. `group_by` adds a breakdown along one dimension
+     * without changing anything else in the response.
+     */
+    getStats: (filters?: Partial<TradeFilters> & { group_by?: StatsGroupBy }) =>
       request<TradeStats>(`/trades/stats${buildQuery(filters)}`),
 
     /** List trading accounts. */
@@ -161,6 +166,17 @@ export function createApi(baseUrl: string, token?: string | null) {
         method: 'PUT',
         body: JSON.stringify(rules),
       }),
+
+    /**
+     * Every prop rule evaluated server-side against the account's closed
+     * trades. Saves downloading the whole trade list to find out, and keeps
+     * the app's numbers identical to the ones the execution guards will use.
+     *
+     * 400 when the account has no starting balance: the thresholds are
+     * percentages of it, so there is nothing to compute without one.
+     */
+    getPropStatus: (accountId: string) =>
+      request<PropStatus>(`/accounts/${encodeURIComponent(accountId)}/prop-status`),
 
     /** Economic calendar (high/medium impact) for the current week. */
     getCalendar: () => request<EcoEvent[]>('/macro/calendar'),
