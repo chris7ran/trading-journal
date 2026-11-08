@@ -209,6 +209,13 @@ pub struct TradeStats {
     pub gross_profit: f64,
     pub gross_loss: f64,
     pub by_symbol: Vec<SymbolStat>,
+    /// Breakdown along whatever `group_by` asked for. Empty when the caller
+    /// asked for none — `by_symbol` keeps its old meaning either way, so an
+    /// existing client sees no change.
+    pub groups: Vec<GroupStat>,
+    /// Echoes the dimension the groups are cut along, so a reader never has
+    /// to infer it from the shape of the keys.
+    pub group_by: Option<String>,
 }
 
 /// Per-symbol breakdown row.
@@ -218,6 +225,26 @@ pub struct SymbolStat {
     pub trades: i64,
     pub wins: i64,
     pub pnl: f64,
+}
+
+/// One row of a `group_by` breakdown.
+///
+/// Carries more than `SymbolStat` because the point of grouping is comparison:
+/// a group's P&L means little without knowing how many trades produced it and
+/// at what hit rate.
+#[derive(Debug, Serialize)]
+pub struct GroupStat {
+    pub key: String,
+    pub trades: i64,
+    pub wins: i64,
+    pub losses: i64,
+    pub pnl: f64,
+    pub avg_win: f64,
+    pub avg_loss: f64,
+    /// Fraction in [0, 1] over the group's trades.
+    pub win_rate: f64,
+    /// gross_profit / |gross_loss|; `None` when the group has no losses.
+    pub profit_factor: Option<f64>,
 }
 
 // --- Setups ------------------------------------------------------------------

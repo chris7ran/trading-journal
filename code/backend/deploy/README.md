@@ -393,3 +393,88 @@ curl -sH "Authorization: Bearer $TOKEN" \
 need each reading to occur fifteen-odd times before they mean anything — call it
 three months. Producing them sooner would just be noise wearing the costume of
 insight.
+
+## The journal as an MCP server
+
+`/mcp` exposes the journal to an assistant over JSON-RPC: accounts, trades,
+grouped statistics, prop firm status, daily levels and archived briefs.
+
+**Read-only.** Nine tools, none of which creates, edits or deletes anything.
+The journal is written by the app, by the CSV importer and by the MT5 feed,
+each with its own credential. An assistant that can read the whole journal is
+useful; one that can rewrite it is a liability.
+
+### A third credential
+
+```bash
+# api.env
+MCP_TOKEN=<openssl rand -hex 24>
+```
+
+Not the JWT, for two reasons. The JWT expires, and a connector left in place
+for weeks would break every time it did. And this token grants read access
+only: a leak exposes what was traded, never the ability to change it or to log
+in as you. Empty disables `/mcp` entirely, which is the default.
+
+### Reach it from the tailnet
+
+The journal is already published on `8443` by `tailscale serve`, so the
+endpoint needs nothing new:
+
+```
+https://<host>.<tailnet>.ts.net:8443/mcp
+Authorization: Bearer <MCP_TOKEN>
+```
+
+### Verify end to end
+
+```bash
+MCP=<the MCP_TOKEN>
+
+# Handshake
+curl -s -X POST http://127.0.0.1:8090/mcp \
+  -H "Authorization: Bearer $MCP" -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{}}}' | jq .result.serverInfo
+
+# What it offers
+curl -s -X POST http://127.0.0.1:8090/mcp \
+  -H "Authorization: Bearer $MCP" -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | jq -r '.result.tools[].name'
+
+# A real answer
+curl -s -X POST http://127.0.0.1:8090/mcp \
+  -H "Authorization: Bearer $MCP" -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"get_stats","arguments":{"group_by":"month"}}}' \
+  | jq .result.structuredContent.groups
+```
+
+A 401 means the token does not match — check for a trailing newline in
+`api.env`. A JSON-RPC error comes back with HTTP 200 and an `error` object;
+that is the protocol, not a bug.
+
+### Stateless
+
+No `Mcp-Session-Id` is issued, so nothing has to survive a container restart
+and a client reconnecting mid-conversation simply works. The spec allows it: a
+server that returns no session id is never sent one back.
+
+## Prop firm status, server-side
+
+`GET /accounts/:id/prop-status` evaluates every rule against the account's
+closed trades: profit target, drawdown from the peak, daily loss, consistency.
+
+The computation used to live in the mobile app, which had to download the full
+trade list to run it. Moving it here means the app, the MCP tools and the
+future execution guards read the same numbers — a guard that refuses a trade
+because the daily allowance is spent has to agree with the screen that said
+there was room left.
+
+Two things worth knowing:
+
+- Every threshold is a percentage of the **starting balance** (`accounts.balance`),
+  not of current equity. An account without one gets a 400 rather than a
+  plausible-looking answer computed from a default nobody chose.
+- The daily window is **UTC**, matching how timestamps are stored. Prop firms
+  reset at their own server midnight, which is usually not UTC — a known
+  approximation, and the reason the day used is echoed back in the response as
+  `today`.

@@ -93,7 +93,35 @@ export interface TradeStats {
   gross_profit: number;
   gross_loss: number;
   by_symbol: SymbolStat[];
+  /** Breakdown along `group_by`; empty when none was requested. */
+  groups: GroupStat[];
+  /** The dimension `groups` is cut along, echoed back by the server. */
+  group_by: string | null;
 }
+
+/** One row of a `group_by` breakdown. */
+export interface GroupStat {
+  key: string;
+  trades: number;
+  wins: number;
+  losses: number;
+  pnl: number;
+  avg_win: number;
+  avg_loss: number;
+  win_rate: number; // 0..1
+  profit_factor: number | null;
+}
+
+/** Dimensions `GET /trades/stats?group_by=` accepts. */
+export type StatsGroupBy =
+  | 'symbol'
+  | 'day'
+  | 'week'
+  | 'month'
+  | 'setup'
+  | 'direction'
+  | 'account'
+  | 'plan';
 
 export interface LoginResponse {
   token: string;
@@ -160,6 +188,52 @@ export interface PropRule {
   min_trading_days: number | null;
   consistency_rule_pct: number;
   lot_size_max: number | null;
+}
+
+export type PropAlertLevel = 'ok' | 'warn' | 'danger';
+
+export interface PropAlert {
+  level: PropAlertLevel;
+  text: string;
+}
+
+/**
+ * Every prop firm rule evaluated server-side, from
+ * `GET /accounts/:id/prop-status`.
+ *
+ * Same computation as `utils/propfirm.ts`, moved to the server so the app,
+ * the MCP tools and the future execution guards cannot disagree on whether a
+ * limit is spent. Amounts are in the account's currency; `*_used` and
+ * `*_progress` are fractions where 1 means the limit is exactly reached.
+ */
+export interface PropStatus {
+  start_balance: number;
+  net_pnl: number;
+  current_equity: number;
+  peak_equity: number;
+
+  profit_target: number | null;
+  profit_progress: number;
+  target_reached: boolean;
+
+  max_drawdown: number | null;
+  current_drawdown: number;
+  drawdown_used: number;
+
+  daily_limit: number | null;
+  today_pnl: number;
+  daily_used: number;
+  /** UTC day `today_pnl` covers, echoed back so it can be checked. */
+  today: string;
+
+  consistency_limit: number;
+  best_day_pnl: number;
+  best_day: string | null;
+  consistency_pct: number;
+  consistency_ok: boolean;
+  min_total_for_payout: number;
+
+  alerts: PropAlert[];
 }
 
 export interface UpsertPropRule {

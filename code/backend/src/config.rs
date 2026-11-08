@@ -22,6 +22,14 @@ pub struct Config {
     /// that must not hold a user session, and a leaked ingest token can only
     /// write candles — it cannot read trades. Empty disables `/ingest/*`.
     pub ingest_token: String,
+    /// Bearer token presented on `/mcp`.
+    ///
+    /// A third credential rather than the JWT, for two reasons. The JWT
+    /// expires, and an assistant connected for weeks would break every time
+    /// it did. And this one grants **read-only** access to the journal: a
+    /// leak exposes what was traded, never the ability to change it or to
+    /// authenticate as the user. Empty disables `/mcp` entirely.
+    pub mcp_token: String,
 }
 
 impl Config {
@@ -38,6 +46,7 @@ impl Config {
                 .context("JWT_TTL_HOURS must be an integer")?,
             cors_allowed_origins: env_or("CORS_ALLOWED_ORIGINS", "*"),
             ingest_token: env_or("INGEST_TOKEN", ""),
+            mcp_token: env_or("MCP_TOKEN", ""),
         })
     }
 }

@@ -1,13 +1,15 @@
-//! Handlers for `/accounts` and `/accounts/:id/rules`.
+//! Handlers for `/accounts`, `/accounts/:id/rules` and `/accounts/:id/prop-status`.
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::Json;
+use chrono::Utc;
 use sqlx::{QueryBuilder, Sqlite, SqlitePool};
 use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
 use crate::models::{Account, NewAccount, PropRule, UpdateAccount, UpsertPropRule};
+use crate::prop::{self, ClosedTrade, PropStatus};
 use crate::state::AppState;
 
 /// `GET /accounts` — list all trading accounts, newest first.
@@ -217,6 +219,80 @@ pub async fn delete_account(
         return Err(AppError::NotFound);
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// `GET /accounts/:id/prop-status` — every prop firm rule evaluated against
+/// the account's closed trades.
+///
+/// The computation used to live in the mobile app, which had to download the
+/// whole trade list to run it. Server-side, the app and the future execution
+/// guards read the same numbers — a guard that refuses a trade because the
+/// daily allowance is spent has to agree with the screen that said there was
+/// room left.
+pub async fn prop_status(
+    State(state): State<AppState>,
+    Path(account_id): Path<String>,
+) -> AppResult<Json<PropStatus>> {
+    Ok(Json(load_prop_status(&state, &account_id).await?))
+}
+
+/// Shared by the HTTP handler and the MCP tool of the same name.
+pub(crate) async fn load_prop_status(
+    state: &AppState,
+    account_id: &str,
+) -> AppResult<PropStatus> {
+    let account = fetch_account(&state.pool, account_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+
+    // Every threshold is a fraction of the starting balance, so without one
+    // there is nothing to compute. The app substitutes 100 000 when the field
+    // is empty; doing the same here would hand back percentages of a number
+    // nobody chose, and they would look exactly as authoritative as real ones.
+    let start_balance = match account.balance {
+        Some(b) if b > 0.0 => b,
+        _ => {
+            return Err(AppError::BadRequest(
+                "ce compte n'a pas de solde de départ : les règles prop firm sont \
+                 des pourcentages de ce solde et ne peuvent pas être évaluées sans lui"
+                    .into(),
+            ))
+        }
+    };
+
+    let rule = sqlx::query_as::<_, PropRule>("SELECT * FROM prop_rules WHERE account_id = ?")
+        .bind(account_id)
+        .fetch_optional(&state.pool)
+        .await?;
+
+    // A trade belongs to the day it was *closed*: that is when its result
+    // lands on the account, and what a daily loss limit measures.
+    let rows: Vec<(String, String, f64)> = sqlx::query_as(
+        r#"
+        SELECT
+            substr(COALESCE(close_time, open_time, created_at), 1, 10) AS day,
+            COALESCE(close_time, open_time, created_at)                AS at,
+            pnl
+        FROM trades
+        WHERE account_id = ? AND pnl IS NOT NULL
+        "#,
+    )
+    .bind(account_id)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let trades: Vec<ClosedTrade> = rows
+        .into_iter()
+        .map(|(day, at, pnl)| ClosedTrade { day, at, pnl })
+        .collect();
+
+    // UTC, matching how timestamps are stored and how `substr` slices them
+    // above. Prop firms reset the daily allowance at their own server
+    // midnight, which is usually not UTC — a known approximation, and the
+    // reason the day used is echoed back in the response.
+    let today = Utc::now().format("%Y-%m-%d").to_string();
+
+    Ok(prop::compute(&trades, start_balance, rule.as_ref(), &today))
 }
 
 async fn fetch_account(pool: &SqlitePool, id: &str) -> AppResult<Option<Account>> {
