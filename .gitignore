@@ -5,6 +5,17 @@
 **/api.env
 !**/.env.example
 
+# Configuration du pont MT5 : numéros de comptes réels, noms de serveurs de
+# broker et chemins de machine. Seul le modèle est suivi.
+code/mcp-mt5/accounts.toml
+!code/mcp-mt5/accounts.example.toml
+
+# Python
+__pycache__/
+*.py[cod]
+**/.venv/
+**/venv/
+
 # Rust
 **/target/
 **/*.rs.bk

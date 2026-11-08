@@ -1,0 +1,12 @@
+# Pont MCP MT5 — Windows uniquement, Python 3.11 ou plus récent
+# (la configuration est lue avec tomllib, entré dans la bibliothèque standard
+# en 3.11).
+
+# Pilotage du terminal. Paquet Windows uniquement : il parle au terminal par
+# IPC local, il n'existe pas de portage Linux ou macOS.
+MetaTrader5>=5.0.45
+
+# Protocole MCP et serveur ASGI. `mcp` tire déjà uvicorn et starlette, mais
+# uvicorn est déclaré explicitement parce que server.py l'importe lui-même.
+mcp>=1.2.0
+uvicorn>=0.30

@@ -1,0 +1,57 @@
+# Modèle de configuration du pont MCP MT5.
+#
+# Copiez ce fichier en `accounts.toml` et renseignez-le avec vos vraies
+# valeurs. `accounts.toml` est dans le .gitignore et ne doit jamais être
+# commité : il contient des numéros de comptes réels et des chemins de
+# machine.
+#
+# Une section [[account]] par terminal MetaTrader 5. Chacune reçoit son propre
+# processus au démarrage, parce que le paquet Python `MetaTrader5` ne gère
+# qu'une connexion de terminal par processus.
+
+[[account]]
+# Nom court utilisé dans les appels d'outils. Libre, mais stable : il
+# apparaîtra dans les journaux et dans les conversations.
+alias = "exemple-demo"
+
+# Numéro de compte MT5, chiffres uniquement. Il doit correspondre au compte
+# réellement connecté dans ce terminal : le pont refuse de démarrer sinon,
+# parce qu'un dossier portable recopié se souvient de sa dernière session et
+# pourrait pousser des trades vers le mauvais compte du journal.
+login = "000000000"
+
+# Nom exact du serveur du broker, tel qu'affiché dans le terminal.
+server = "NomDuBroker-MT5 1"
+
+# Chemin de l'exécutable, pas du dossier. Le terminal doit avoir été lancé au
+# moins une fois avec /portable pour que sa configuration vive dans ce dossier.
+terminal = 'C:\MT5\exemple-demo\terminal64.exe'
+
+# Devise du compte. Sert aux garde-fous : un plafond de perte journalière de
+# 5 % n'a pas la même valeur en euros et en dollars.
+currency = "USD"
+
+# Passez à false pour laisser la section en place sans démarrer le terminal.
+enabled = true
+
+# Correspondance entre les noms du journal et ceux du broker. Les brokers
+# suffixent et renomment : chez XM le Nasdaq s'appelle US100 et tout porte un
+# « # ». Un nom absent de cette table est transmis tel quel au terminal.
+[account.symbols]
+GER40 = "GER40Cash#"
+US30 = "US30Cash#"
+NAS100 = "US100Cash#"
+XAUUSD = "GOLD#"
+
+# Deuxième terminal, désactivé par défaut. Dupliquez ce bloc par compte.
+#
+# [[account]]
+# alias = "exemple-reel"
+# login = "000000001"
+# server = "NomDuBroker-MT5 2"
+# terminal = 'C:\MT5\exemple-reel\terminal64.exe'
+# currency = "EUR"
+# enabled = false
+#
+# [account.symbols]
+# GER40 = "GER40"
