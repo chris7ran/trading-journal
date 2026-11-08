@@ -29,6 +29,8 @@ from pathlib import Path
 from typing import Any
 
 import config
+import guards
+import plan
 import worker
 
 #: Reported to clients in the initialize result. The SDK no longer substitutes
@@ -310,6 +312,183 @@ def register_tools(mcp: Any, bridge: Bridge) -> None:
         terminal = bridge.get(account)
         symbols = await terminal.call("market_watch")
         return {"account": account, "count": len(symbols), "symbols": symbols}
+
+    @mcp.tool()
+    async def preview_plan(
+        account: str,
+        symbol: str,
+        direction: str,
+        stop_loss: float,
+        targets: list[float],
+        risk_pct: float | None = None,
+        entry: float | None = None,
+        entry_low: float | None = None,
+        entry_high: float | None = None,
+    ) -> dict:
+        """Chiffrer un plan de trade **sans rien envoyer**.
+
+        Calcule la taille de position pour le risque voulu, la découpe en une
+        jambe par cible, et passe le tout aux garde-fous. Aucun ordre n'est
+        transmis : cet outil ne sait pas en envoyer.
+
+        Le dimensionnement part du **prix de marché réel**, pas du prix écrit
+        dans l'idée. Le stop, lui, n'a pas bougé : entrer dix points plus haut
+        rend la perte réelle dix points plus grande que celle budgétée.
+
+        `risk_pct` est une fraction — 0.005 pour un demi-pour-cent. Omis, il
+        prend le plafond du compte. `targets` va de la cible la plus proche à
+        la plus lointaine. `entry` ou le couple `entry_low`/`entry_high`
+        servent à mesurer ce qu'un retard a coûté ; ils ne changent pas le
+        prix d'exécution.
+
+        Le verdict vaut `accepté`, `à confirmer` ou `refusé`, et liste chaque
+        motif plutôt que le premier rencontré.
+        """
+        terminal = bridge.get(account)
+        limits = guards.Limits(
+            risk_pct_max=terminal.account.risk_pct_max,
+            daily_loss_pct_max=terminal.account.daily_loss_pct_max,
+            max_open_plans=terminal.account.max_open_plans,
+        )
+        broker_symbol = terminal.account.to_broker(symbol)
+
+        info = await terminal.call("account")
+        spec_raw = await terminal.call("symbol", symbol=broker_symbol)
+        quote = await terminal.call("quote", symbol=broker_symbol)
+        day = await terminal.call("day_state")
+
+        spec = plan.SymbolSpec(
+            name=spec_raw["name"],
+            digits=spec_raw["digits"],
+            point=spec_raw["point"],
+            tick_size=spec_raw["tick_size"],
+            tick_value=spec_raw["tick_value"],
+            contract_size=spec_raw["contract_size"],
+            volume_min=spec_raw["volume_min"],
+            volume_step=spec_raw["volume_step"],
+            volume_max=spec_raw["volume_max"],
+            stops_level=spec_raw["stops_level"],
+        )
+
+        is_long = str(direction).strip().upper() in ("LONG", "BUY", "ACHAT")
+        market_price = (quote["ask"] if is_long else quote["bid"]) or 0.0
+
+        try:
+            sized = plan.build(
+                spec=spec,
+                direction=direction,
+                stop_loss=float(stop_loss),
+                targets=[float(t) for t in targets],
+                equity=info["equity"],
+                risk_pct=risk_pct if risk_pct is not None else limits.risk_pct_max,
+                market_price=market_price,
+                entry=entry,
+                entry_range=(entry_low, entry_high)
+                if entry_low is not None and entry_high is not None
+                else None,
+                thresholds=plan.Thresholds(
+                    green=terminal.account.r_green, red=terminal.account.r_red
+                ),
+            )
+        except plan.PlanError as exc:
+            # A plan that cannot be built is not an internal failure: it is an
+            # answer, and the reason is the useful part.
+            return {
+                "account": account,
+                "decision": "refusé",
+                "reason": str(exc),
+                "quote": quote,
+            }
+
+        # Only now is the volume known, so only now can the margin be asked
+        # for. This is a terminal-side calculation; it reaches no server.
+        margin = None
+        try:
+            margin = (
+                await terminal.call(
+                    "margin_for",
+                    symbol=broker_symbol,
+                    direction=sized.direction,
+                    volume=sized.total_volume,
+                )
+            )["margin"]
+        except ToolError:
+            pass  # the guard treats an unknown margin as "not checked"
+
+        verdict = guards.check(
+            sized=sized,
+            limits=limits,
+            state=guards.AccountState(
+                equity=info["equity"],
+                balance=info["balance"],
+                currency=info["currency"],
+                margin_free=info["margin_free"],
+                today_realised_pnl=day["realised_pnl"],
+                open_plans=day["open_plans"],
+                open_positions=day["open_positions"],
+                algo_trading_enabled=bool(info.get("algo_trading_enabled", True)),
+                trade_mode=spec_raw["trade_mode"],
+                quoting=bool(quote["quoting"]),
+            ),
+            margin_required=margin,
+        )
+
+        return {
+            "account": account,
+            "decision": verdict.decision,
+            "findings": [
+                {"level": f.level, "code": f.code, "message": f.message}
+                for f in verdict.findings
+            ],
+            "plan": {
+                "symbol": sized.symbol,
+                "journal_symbol": terminal.account.to_journal(sized.symbol),
+                "direction": sized.direction,
+                "reference_price": sized.reference_price,
+                "stop_loss": sized.stop_loss,
+                "stop_distance": round(sized.stop_distance, spec.digits),
+                "total_volume": sized.total_volume,
+                "risk_amount": sized.risk_amount,
+                "risk_pct": round(sized.risk_pct, 5),
+                "currency": info["currency"],
+                "value_per_point": sized.value_per_point,
+                "blended_r": sized.blended_r,
+                "planned_blended_r": sized.planned_blended_r,
+                "degradation": None
+                if sized.degradation is None
+                else round(sized.degradation, 3),
+                "zone": sized.zone,
+                "legs": [
+                    {
+                        "index": leg.index,
+                        "volume": leg.volume,
+                        "take_profit": leg.take_profit,
+                        "r_multiple": leg.r_multiple,
+                    }
+                    for leg in sized.legs
+                ],
+                "margin_required": margin,
+            },
+            "account_state": {
+                "equity": info["equity"],
+                "balance": info["balance"],
+                "margin_free": info["margin_free"],
+                "realised_today": day["realised_pnl"],
+                "open_plans": day["open_plans"],
+                "open_positions": day["open_positions"],
+                "daily_allowance": round(
+                    (info["balance"] - day["realised_pnl"]) * limits.daily_loss_pct_max,
+                    2,
+                ),
+            },
+            "limits": {
+                "risk_pct_max": limits.risk_pct_max,
+                "daily_loss_pct_max": limits.daily_loss_pct_max,
+                "max_open_plans": limits.max_open_plans,
+                "r_green": terminal.account.r_green,
+                "r_red": terminal.account.r_red,
+            },
+        }
 
     @mcp.tool()
     async def get_clock(account: str) -> dict:

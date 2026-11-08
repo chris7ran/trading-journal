@@ -43,6 +43,35 @@ US30 = "US30Cash#"
 NAS100 = "US100Cash#"
 XAUUSD = "GOLD#"
 
+# Garde-fous propres au pont. Ils s'appliquent toujours, y compris aux comptes
+# sans prop firm derrière : une démo de broker n'a aucune règle et doit rester
+# impossible à faire sauter par une faute de frappe.
+#
+# Les pourcentages s'écrivent en fractions : 1 % vaut 0.01. Écrire 1 est
+# refusé au démarrage, parce que ce serait risquer tout le compte.
+#
+# La section entière est facultative ; les valeurs ci-dessous sont aussi les
+# valeurs par défaut.
+[account.limits]
+# Part de l'équité qu'un seul plan peut risquer.
+risk_pct_max = 0.01
+
+# Part du solde d'ouverture perdable avant que le pont n'accepte plus rien
+# jusqu'au lendemain. Doit rester au-dessus de risk_pct_max, sinon aucun plan
+# ne pourrait jamais passer.
+daily_loss_pct_max = 0.02
+
+# Plans, pas positions : un plan ouvre une jambe par cible.
+max_open_plans = 1
+
+# R moyen pondéré sur les jambes, qui mesure l'espérance du plan tel qu'il
+# sera réellement exécuté — pas le ratio de la cible la plus lointaine.
+#   au-dessus de r_green : exécution normale
+#   entre les deux       : alerte, l'humain tranche
+#   sous r_red           : refus, sans dérogation
+r_green = 0.80
+r_red = 0.50
+
 # Deuxième terminal, désactivé par défaut. Dupliquez ce bloc par compte.
 #
 # [[account]]

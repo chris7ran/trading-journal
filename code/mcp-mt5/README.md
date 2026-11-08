@@ -119,8 +119,83 @@ sur la même VM Windows.
 | `get_quote` | Bid, ask, spread en points |
 | `list_market_watch` | Symboles présents dans le Market Watch |
 | `get_clock` | Décalage entre l'horloge du broker et l'UTC réel |
+| `preview_plan` | Chiffre un plan de trade et le passe aux garde-fous, **sans rien envoyer** |
 
 Tous prennent un `account` : l'alias défini dans `accounts.toml`.
+
+## Chiffrer un plan
+
+`preview_plan` prend une idée — symbole, sens, stop, cibles, risque voulu — et
+rend la taille de position, le découpage en jambes et le verdict des
+garde-fous. **Il n'envoie rien** : aucune fonction de ce module ne sait placer
+un ordre.
+
+### Le dimensionnement part du prix réel
+
+Pas du prix écrit dans l'idée. Le stop, lui, n'a pas bougé : entrer dix points
+plus haut rend la perte réelle dix points plus grande que celle budgétée.
+`entry` et `entry_low`/`entry_high` servent uniquement à mesurer ce qu'un
+retard a coûté.
+
+```
+volume = (équité × risque%) / (distance_au_stop × valeur_du_point)
+```
+
+arrondi **vers le bas** au pas du symbole, jamais vers le haut : dépasser
+silencieusement le risque demandé serait pire que ne rien garantir.
+
+### Une jambe par cible
+
+Plusieurs positions ouvertes d'un coup, pas une position découpée ensuite.
+Chaque jambe porte sa propre cible, déposée chez le broker, donc les sorties
+partent même si cette machine redémarre en pleine séance. Le reste de la
+division tombe sur la cible la plus lointaine, celle qui a le plus de chances
+d'être laissée courir.
+
+### Le ratio qui décide
+
+Le **R moyen pondéré par le volume**, pas celui de la cible la plus lointaine :
+c'est l'espérance du plan tel qu'il sera exécuté. Trois zones, réglables par
+compte dans `[account.limits]` — au-dessus de `r_green` on exécute, entre les
+deux on alerte et l'humain tranche, sous `r_red` on refuse sans dérogation.
+
+Un cas mérite attention : quand le prix est passé de l'autre côté de l'entrée,
+**vers le stop**, le ratio s'améliore mécaniquement puisque le stop est plus
+proche. Le plan le signale, parce qu'un chiffre flatteur est le plus dangereux
+au moment précis où le scénario se dégrade.
+
+### Deux couches de garde-fous
+
+Celles du pont, dans `accounts.toml`, s'appliquent **toujours** : risque par
+trade, perte journalière, plans simultanés, marge. Elles existent pour les
+comptes sans prop firm derrière — une démo n'a aucune règle et doit rester
+impossible à faire sauter.
+
+Celles de la firme, lues depuis le journal, ne s'appliquent qu'aux comptes qui
+en déclarent. Le pont coupe avant qu'elles ne soient atteintes plutôt qu'au
+moment où elles sont enfreintes.
+
+Le garde-fou le plus utile est celui qui refuse un plan dont la **perte
+complète** dépasserait l'enveloppe du jour, au lieu de le découvrir une fois
+le stop touché. Un plafond vérifié seulement après coup est un rapport, pas un
+plafond.
+
+Le verdict vaut `accepté`, `à confirmer` ou `refusé`, et liste **tous** les
+motifs : corriger un refus pour tomber sur le suivant n'apprend rien sur
+l'endroit où est vraiment le mur.
+
+## Tests
+
+Le dimensionnement et les garde-fous ne dépendent ni de MT5 ni du réseau, donc
+ils se testent intégralement :
+
+```powershell
+py -3.12 test_plan.py
+py -3.12 test_guards.py
+```
+
+Soixante cas, dont chaque refus. Un garde-fou qu'on ne sait pas déclencher en
+test est un garde-fou qu'on découvrira cassé le jour où il devait servir.
 
 ## Deux pièges du modèle de données MT5
 

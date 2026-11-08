@@ -26,6 +26,15 @@ class ConfigError(Exception):
     """Raised with a message meant to be read by a person, not parsed."""
 
 
+#: Ceilings applied when `accounts.toml` names none. Deliberately strict:
+#: a forgotten setting must fail safe, not open the throttle.
+DEFAULT_RISK_PCT_MAX = 0.01
+DEFAULT_DAILY_LOSS_PCT_MAX = 0.02
+DEFAULT_MAX_OPEN_PLANS = 1
+DEFAULT_R_GREEN = 0.80
+DEFAULT_R_RED = 0.50
+
+
 @dataclass(frozen=True)
 class Account:
     """One MT5 terminal the bridge can talk to."""
@@ -38,6 +47,23 @@ class Account:
     enabled: bool
     #: Journal symbol -> broker symbol, e.g. `NAS100` -> `US100Cash#`.
     symbols: dict[str, str] = field(default_factory=dict)
+
+    # --- Garde-fous propres au pont -----------------------------------------
+    # Ils s'appliquent toujours, y compris aux comptes sans prop firm derrière.
+    # Une démo de broker n'a aucune règle, et doit rester impossible à faire
+    # sauter par une faute de frappe.
+
+    #: Part de l'équité qu'un plan peut risquer.
+    risk_pct_max: float = DEFAULT_RISK_PCT_MAX
+    #: Part du solde d'ouverture perdable avant que le pont n'accepte plus
+    #: rien jusqu'au lendemain.
+    daily_loss_pct_max: float = DEFAULT_DAILY_LOSS_PCT_MAX
+    #: Plans, pas positions : un plan compte plusieurs jambes.
+    max_open_plans: int = DEFAULT_MAX_OPEN_PLANS
+    #: R moyen pondéré au-dessus duquel on exécute sans discuter.
+    r_green: float = DEFAULT_R_GREEN
+    #: R moyen pondéré en dessous duquel on refuse, sans dérogation.
+    r_red: float = DEFAULT_R_RED
 
     def to_broker(self, name: str) -> str:
         """Translate a journal symbol into the broker's own spelling.
@@ -135,6 +161,35 @@ def _parse_account(entry: dict, index: int, path: Path) -> Account:
     if not isinstance(symbols, dict):
         raise ConfigError(f"{where} : 'symbols' doit être une table")
 
+    limits = entry.get("limits", {})
+    if not isinstance(limits, dict):
+        raise ConfigError(f"{where} : 'limits' doit être une table")
+
+    risk_pct_max = _fraction(limits, "risk_pct_max", DEFAULT_RISK_PCT_MAX, where)
+    daily_loss_pct_max = _fraction(
+        limits, "daily_loss_pct_max", DEFAULT_DAILY_LOSS_PCT_MAX, where
+    )
+    r_green = _positive(limits, "r_green", DEFAULT_R_GREEN, where)
+    r_red = _positive(limits, "r_red", DEFAULT_R_RED, where)
+
+    if r_red > r_green:
+        raise ConfigError(
+            f"{where} : r_red ({r_red}) au-dessus de r_green ({r_green}) — "
+            f"le plancher de refus doit être sous le seuil d'acceptation"
+        )
+    if risk_pct_max > daily_loss_pct_max:
+        # Sinon un seul trade perdant dépasserait l'enveloppe du jour, et le
+        # pont refuserait systématiquement avant d'avoir rien laissé passer.
+        raise ConfigError(
+            f"{where} : risk_pct_max ({risk_pct_max}) au-dessus de "
+            f"daily_loss_pct_max ({daily_loss_pct_max}) : aucun plan ne pourrait "
+            f"jamais passer"
+        )
+
+    max_open_plans = limits.get("max_open_plans", DEFAULT_MAX_OPEN_PLANS)
+    if not isinstance(max_open_plans, int) or max_open_plans < 1:
+        raise ConfigError(f"{where} : 'max_open_plans' doit être un entier ≥ 1")
+
     return Account(
         alias=alias,
         login=login,
@@ -143,7 +198,38 @@ def _parse_account(entry: dict, index: int, path: Path) -> Account:
         currency=str(entry.get("currency", "")).strip().upper() or "USD",
         enabled=bool(entry.get("enabled", True)),
         symbols={str(k).strip().upper(): str(v).strip() for k, v in symbols.items()},
+        risk_pct_max=risk_pct_max,
+        daily_loss_pct_max=daily_loss_pct_max,
+        max_open_plans=max_open_plans,
+        r_green=r_green,
+        r_red=r_red,
     )
+
+
+def _fraction(table: dict, key: str, default: float, where: str) -> float:
+    """A percentage written as a fraction: 0.01 is one percent.
+
+    Rejecting anything above 1 catches the likeliest mistake by far — writing
+    `1` for one percent, which would authorise risking the whole account on
+    one trade.
+    """
+    value = _positive(table, key, default, where)
+    # `>= 1` et pas `> 1` : une fraction de 1 vaut 100 % du compte, ce qui
+    # n'est jamais une intention. Écrire « 1 » pour un pour cent est de loin
+    # la faute la plus probable, et elle doit se voir dire exactement ça.
+    if value >= 1:
+        raise ConfigError(
+            f"{where} : '{key}' vaut {value} ; c'est une fraction de l'équité, "
+            f"1 % s'écrit 0.01"
+        )
+    return value
+
+
+def _positive(table: dict, key: str, default: float, where: str) -> float:
+    raw = table.get(key, default)
+    if not isinstance(raw, (int, float)) or isinstance(raw, bool) or raw <= 0:
+        raise ConfigError(f"{where} : '{key}' doit être un nombre strictement positif")
+    return float(raw)
 
 
 def _reject_duplicates(accounts: list[Account], path: Path) -> None:

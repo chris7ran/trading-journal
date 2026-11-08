@@ -442,6 +442,75 @@ def _market_watch(state: _State) -> list[dict]:
     ]
 
 
+def _day_state(state: _State) -> dict:
+    """Where the account stands today, for the guards.
+
+    The broker is the source of truth here, not the journal: a trade taken by
+    hand in the terminal counts against the daily allowance just as much as
+    one the bridge placed, and the journal may not have heard about it yet.
+    """
+    mt5 = state.mt5
+    now = datetime.now(timezone.utc)
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    deals = mt5.history_deals_get(
+        _to_server_datetime(state, midnight.strftime("%Y-%m-%dT%H:%M:%S")),
+        _to_server_datetime(state, now.strftime("%Y-%m-%dT%H:%M:%S")),
+    )
+    if deals is None:
+        raise WorkerError(f"historique du jour illisible : {mt5.last_error()}")
+
+    # Entry deals carry a zero profit but a real commission, so summing over
+    # all of them is right: the fee is paid whether or not the trade is closed.
+    realised = sum(
+        d.profit + d.commission + d.swap
+        for d in deals
+        if d.type in (DEAL_TYPE_BUY, DEAL_TYPE_SELL)
+    )
+
+    positions = mt5.positions_get() or ()
+    # A plan is identified by its magic number. Positions opened by hand carry
+    # zero and count as one group between them — they occupy the account just
+    # the same, so the concurrency ceiling has to see them.
+    plan_magics = {p.magic for p in positions if p.magic}
+    manual = any(p.magic == 0 for p in positions)
+
+    return {
+        "day": now.strftime("%Y-%m-%d"),
+        "time_basis": "utc" if _server_offset(state) is not None else "server",
+        "realised_pnl": round(realised, 2),
+        "open_positions": len(positions),
+        "open_plans": len(plan_magics) + (1 if manual else 0),
+        "plan_magics": sorted(plan_magics),
+        "has_manual_positions": manual,
+        "floating_pnl": round(sum(p.profit for p in positions), 2),
+    }
+
+
+def _margin_for(state: _State, symbol: str, direction: str, volume: float) -> dict:
+    """Margin a hypothetical order would lock up. Sends nothing.
+
+    `order_calc_margin` is a pure calculation inside the terminal — it does
+    not reach the server and cannot place anything.
+    """
+    mt5 = state.mt5
+    if not mt5.symbol_select(symbol, True):
+        raise WorkerError(f"symbole inconnu du terminal : {symbol}")
+    tick = mt5.symbol_info_tick(symbol)
+    if tick is None or not (tick.bid and tick.ask):
+        raise WorkerError(f"aucune cotation pour {symbol}")
+
+    is_long = direction.upper() in ("LONG", "BUY")
+    order_type = mt5.ORDER_TYPE_BUY if is_long else mt5.ORDER_TYPE_SELL
+    price = tick.ask if is_long else tick.bid
+
+    margin = mt5.order_calc_margin(order_type, symbol, volume, price)
+    if margin is None:
+        raise WorkerError(f"marge incalculable : {mt5.last_error()}")
+
+    return {"symbol": symbol, "volume": volume, "price": price, "margin": margin}
+
+
 def _clock(state: _State) -> dict:
     offset = _server_offset(state)
     return {
@@ -466,6 +535,8 @@ _HANDLERS = {
     "quote": _quote,
     "market_watch": _market_watch,
     "clock": _clock,
+    "day_state": _day_state,
+    "margin_for": _margin_for,
 }
 
 _ORDER_TYPES = {
