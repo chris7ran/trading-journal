@@ -31,6 +31,11 @@ pub struct Trade {
     pub notes: Option<String>,
     pub screenshot_url: Option<String>,
     pub mt5_ticket: Option<String>,
+    /// Set when the trade was placed by a trade plan. A plan opens several
+    /// positions at once (thirds sharing one stop), so several rows can carry
+    /// the same `plan_id`; the app folds them into one line. `None` for
+    /// everything taken by hand or imported from a CSV.
+    pub plan_id: Option<String>,
     // Post-trade review (1/0/NULL). setup_tag holds the chosen setup name.
     pub followed_plan: Option<bool>,
     pub respected_sl: Option<bool>,
@@ -123,6 +128,14 @@ pub struct Account {
     pub balance: Option<f64>,
     pub currency: String,
     pub is_funded: bool,
+    /// MT5 account number of the terminal feeding this account, when there is
+    /// one. This is what `POST /ingest/trades` resolves on, so at most one
+    /// account may carry a given login (enforced by a partial unique index).
+    pub mt5_login: Option<String>,
+    /// Broker server the terminal connects to, e.g. `XMGlobalMU-MT5 2`.
+    /// Informational: two brokers can hand out the same account number, and
+    /// without the server name a login alone does not identify a terminal.
+    pub mt5_server: Option<String>,
     pub created_at: String,
 }
 
@@ -134,6 +147,10 @@ pub struct NewAccount {
     pub balance: Option<f64>,
     pub currency: Option<String>,
     pub is_funded: Option<bool>,
+    #[serde(default)]
+    pub mt5_login: Option<String>,
+    #[serde(default)]
+    pub mt5_server: Option<String>,
 }
 
 /// Payload for `PUT /accounts/:id` (partial update).
@@ -143,6 +160,8 @@ pub struct UpdateAccount {
     pub balance: Option<f64>,
     pub currency: Option<String>,
     pub is_funded: Option<bool>,
+    pub mt5_login: Option<String>,
+    pub mt5_server: Option<String>,
 }
 
 // --- Prop firm rules ---------------------------------------------------------

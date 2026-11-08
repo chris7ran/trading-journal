@@ -280,7 +280,11 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 ///
 /// Symbols land in log lines and are used as a grouping key, so we keep the
 /// character set tight rather than trusting whatever the terminal sends.
-fn clean_symbol(raw: &str) -> AppResult<String> {
+///
+/// Shared with the trade ingestion path so that a symbol written by the EA and
+/// the same symbol written by the execution layer normalise identically — two
+/// spellings of `GER40Cash#` would split every statistic in two.
+pub(crate) fn clean_symbol(raw: &str) -> AppResult<String> {
     let symbol = raw.trim().to_uppercase();
     if symbol.is_empty() {
         return Err(AppError::BadRequest("symbol is required".into()));
@@ -303,7 +307,7 @@ fn clean_symbol(raw: &str) -> AppResult<String> {
 
 /// Accept both `2026-08-30T07:00:00Z` and `2026-08-30 07:00:00` (the shape MT5
 /// produces with `TimeToString`), always interpreting the value as UTC.
-fn parse_utc(raw: &str) -> Result<DateTime<Utc>, String> {
+pub(crate) fn parse_utc(raw: &str) -> Result<DateTime<Utc>, String> {
     let trimmed = raw.trim();
 
     if let Ok(dt) = DateTime::parse_from_rfc3339(trimmed) {

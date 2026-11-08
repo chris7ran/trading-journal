@@ -370,7 +370,7 @@ pub async fn review(
     .await?;
 
     let mut days: Vec<ReviewDay> = Vec::new();
-    let mut day_for = |days: &mut Vec<ReviewDay>, date: &str| -> usize {
+    let day_for = |days: &mut Vec<ReviewDay>, date: &str| -> usize {
         if let Some(i) = days.iter().position(|d| d.date == date) {
             return i;
         }
