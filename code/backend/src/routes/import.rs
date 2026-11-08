@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::csv_import::mt5::{self, ParseResult};
 use crate::error::{AppError, AppResult};
+use crate::routes::ingest_trades::stored_ticket;
 use crate::state::AppState;
 
 #[derive(Debug, Deserialize)]
@@ -54,7 +55,11 @@ pub async fn import_csv(
         mt5::parse(&csv_text).map_err(AppError::BadRequest)?
     };
 
-    let (account_id, account_name) = resolve_account(&state, &query, &parsed).await?;
+    let Resolved {
+        account_id,
+        account_name,
+        mt5_login,
+    } = resolve_account(&state, &query, &parsed).await?;
 
     let mut summary = ImportSummary {
         imported: 0,
@@ -66,11 +71,22 @@ pub async fn import_csv(
     };
 
     for trade in parsed.trades {
+        // When the target account is bound to a terminal, the live feed stores
+        // its tickets prefixed with the MT5 login. Importing the broker's own
+        // history export of the same day must land on those exact rows, not
+        // beside them — otherwise every trade of the period is counted twice.
+        // Accounts with no terminal (hand-entered, Scale FX, older imports)
+        // keep the bare ticket they have always had.
+        let ticket = match (&mt5_login, trade.mt5_ticket.as_deref()) {
+            (Some(login), Some(raw)) => Some(stored_ticket(login, raw)),
+            _ => trade.mt5_ticket.clone(),
+        };
+
         // A known ticket is refreshed (fees may have changed), not re-inserted.
         let existed: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM trades WHERE mt5_ticket IS NOT NULL AND mt5_ticket = ?)",
         )
-        .bind(&trade.mt5_ticket)
+        .bind(&ticket)
         .fetch_one(&state.pool)
         .await?;
 
@@ -106,7 +122,7 @@ pub async fn import_csv(
         .bind(&trade.emotion_tag)
         .bind(&trade.notes)
         .bind(&trade.screenshot_url)
-        .bind(&trade.mt5_ticket)
+        .bind(&ticket)
         .execute(&state.pool)
         .await;
 
@@ -126,33 +142,51 @@ pub async fn import_csv(
     Ok(Json(summary))
 }
 
-/// Decide which account the import targets, returning `(id, name)`.
+/// The account an import lands in.
+struct Resolved {
+    account_id: String,
+    account_name: String,
+    /// The MT5 login this account is bound to, when it is bound to a terminal.
+    /// Decides how tickets are keyed — see the loop above.
+    mt5_login: Option<String>,
+}
+
+/// Decide which account the import targets.
 /// Priority: explicit `?account_id` → the report's `Compte:` number (created on
 /// demand). With neither, we error rather than guess — there's no default.
 async fn resolve_account(
     state: &AppState,
     query: &ImportQuery,
     parsed: &ParseResult,
-) -> AppResult<(String, String)> {
+) -> AppResult<Resolved> {
     if let Some(account_id) = &query.account_id {
-        let row: Option<(String, String)> =
-            sqlx::query_as("SELECT id, name FROM accounts WHERE id = ?")
+        let row: Option<(String, String, Option<String>)> =
+            sqlx::query_as("SELECT id, name, mt5_login FROM accounts WHERE id = ?")
                 .bind(account_id)
                 .fetch_optional(&state.pool)
                 .await?;
-        return row
-            .ok_or_else(|| AppError::BadRequest(format!("account '{account_id}' does not exist")));
+        let (id, name, mt5_login) = row
+            .ok_or_else(|| AppError::BadRequest(format!("account '{account_id}' does not exist")))?;
+        return Ok(Resolved {
+            account_id: id,
+            account_name: name,
+            mt5_login,
+        });
     }
 
     if let Some(number) = &parsed.account_number {
         // Existing MT5 accounts are keyed by their login number in `name`.
-        let existing: Option<(String, String)> =
-            sqlx::query_as("SELECT id, name FROM accounts WHERE name = ?")
+        let existing: Option<(String, String, Option<String>)> =
+            sqlx::query_as("SELECT id, name, mt5_login FROM accounts WHERE name = ?")
                 .bind(number)
                 .fetch_optional(&state.pool)
                 .await?;
-        if let Some(row) = existing {
-            return Ok(row);
+        if let Some((id, name, mt5_login)) = existing {
+            return Ok(Resolved {
+                account_id: id,
+                account_name: name,
+                mt5_login,
+            });
         }
 
         let id = uuid::Uuid::new_v4().to_string();
@@ -168,7 +202,13 @@ async fn resolve_account(
         .bind(broker)
         .execute(&state.pool)
         .await?;
-        return Ok((id, number.clone()));
+        // Freshly created from a report: no terminal is bound to it yet, so
+        // its tickets stay bare until someone fills in `mt5_login`.
+        return Ok(Resolved {
+            account_id: id,
+            account_name: number.clone(),
+            mt5_login: None,
+        });
     }
 
     Err(AppError::BadRequest(

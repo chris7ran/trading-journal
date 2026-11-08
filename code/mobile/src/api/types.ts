@@ -21,6 +21,12 @@ export interface Trade {
   notes: string | null;
   screenshot_url: string | null;
   mt5_ticket: string | null;
+  /**
+   * Set when the trade came from a trade plan. One plan opens several
+   * positions — thirds sharing a stop, with staggered targets — so several
+   * trades can carry the same id and belong on one line.
+   */
+  plan_id: string | null;
   followed_plan: boolean | null;
   respected_sl: boolean | null;
   pattern_valid: boolean | null;
@@ -138,6 +144,10 @@ export interface Account {
   balance: number | null;
   currency: string;
   is_funded: boolean;
+  /** MT5 account number of the terminal feeding this account, if any. */
+  mt5_login: string | null;
+  /** Broker server that terminal connects to, e.g. `XMGlobalMU-MT5 2`. */
+  mt5_server: string | null;
   created_at: string;
 }
 
@@ -166,6 +176,9 @@ export interface UpdateAccount {
   balance?: number | null;
   currency?: string;
   is_funded?: boolean;
+  /** Empty string unbinds the account from its terminal; omit to leave as is. */
+  mt5_login?: string;
+  mt5_server?: string;
 }
 
 export interface NewAccount {
@@ -174,6 +187,8 @@ export interface NewAccount {
   balance?: number | null;
   currency?: string;
   is_funded?: boolean;
+  mt5_login?: string;
+  mt5_server?: string;
 }
 
 // --- Macro terminal ---------------------------------------------------------

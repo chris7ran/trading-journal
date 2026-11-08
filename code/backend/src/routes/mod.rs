@@ -6,6 +6,7 @@ pub mod candles;
 pub mod health;
 pub mod import;
 pub mod ingest;
+pub mod ingest_trades;
 pub mod levels;
 pub mod market;
 pub mod setups;
@@ -107,6 +108,10 @@ pub fn build_router(state: AppState) -> Router {
     let machine = Router::new()
         .route("/ingest/candles", post(ingest::ingest_candles))
         .route("/ingest/status", get(ingest::ingest_status))
+        // Trades executed on the MT5 side. Resolves its target account from
+        // the login it declares, so this credential can only write into
+        // accounts that are actually bound to a terminal.
+        .route("/ingest/trades", post(ingest_trades::ingest_trades))
         // Freezing the brief is a cron's job, not a person's — same machine
         // credential as the candle feed.
         .route("/brief/snapshot", post(archive::create_snapshot))

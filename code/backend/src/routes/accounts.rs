@@ -27,11 +27,14 @@ pub async fn create_account(
         return Err(AppError::BadRequest("name is required".into()));
     }
 
+    let mt5_login = clean_mt5_login(input.mt5_login.as_deref())?;
+    let mt5_server = blank_to_none(input.mt5_server.as_deref());
+
     let id = Uuid::new_v4().to_string();
-    sqlx::query(
+    let result = sqlx::query(
         r#"
-        INSERT INTO accounts (id, name, broker, balance, currency, is_funded)
-        VALUES (?, ?, COALESCE(?, 'FusionMarkets'), ?, COALESCE(?, 'USD'), COALESCE(?, 1))
+        INSERT INTO accounts (id, name, broker, balance, currency, is_funded, mt5_login, mt5_server)
+        VALUES (?, ?, COALESCE(?, 'FusionMarkets'), ?, COALESCE(?, 'USD'), COALESCE(?, 1), ?, ?)
         "#,
     )
     .bind(&id)
@@ -40,8 +43,14 @@ pub async fn create_account(
     .bind(input.balance)
     .bind(&input.currency)
     .bind(input.is_funded)
+    .bind(&mt5_login)
+    .bind(&mt5_server)
     .execute(&state.pool)
-    .await?;
+    .await;
+
+    if let Err(e) = result {
+        return Err(map_account_error(e));
+    }
 
     let account = fetch_account(&state.pool, &id)
         .await?
@@ -79,10 +88,32 @@ pub async fn update_account(
     set_field!("balance", patch.balance);
     set_field!("currency", patch.currency);
     set_field!("is_funded", patch.is_funded);
+    // The two MT5 fields are written by hand rather than through `set_field!`,
+    // because they need a distinction the macro cannot express: omitting the
+    // field leaves the current value alone, while sending an empty string
+    // clears it. Without that, an account bound to the wrong terminal could
+    // never be unbound except by editing the database.
+    if let Some(raw) = patch.mt5_login.as_deref() {
+        if !first {
+            qb.push(", ");
+        }
+        qb.push("mt5_login = ")
+            .push_bind(clean_mt5_login(Some(raw))?);
+        first = false;
+    }
+    if let Some(raw) = patch.mt5_server.as_deref() {
+        if !first {
+            qb.push(", ");
+        }
+        qb.push("mt5_server = ").push_bind(blank_to_none(Some(raw)));
+        first = false;
+    }
 
     if !first {
         qb.push(" WHERE id = ").push_bind(id.clone());
-        qb.build().execute(&state.pool).await?;
+        if let Err(e) = qb.build().execute(&state.pool).await {
+            return Err(map_account_error(e));
+        }
     }
 
     let account = fetch_account(&state.pool, &id)
@@ -194,4 +225,53 @@ async fn fetch_account(pool: &SqlitePool, id: &str) -> AppResult<Option<Account>
         .fetch_optional(pool)
         .await?;
     Ok(account)
+}
+
+/// Longest MT5 login we accept. Real ones are 8-9 digits; the ceiling is there
+/// to keep a pasted paragraph out of the column, not to validate a format.
+const MAX_MT5_LOGIN_LEN: usize = 20;
+
+/// Normalise an MT5 login: trim, treat blank as "no terminal", keep digits only.
+///
+/// Digits-only is not cosmetic. The login is concatenated into the stored
+/// ticket (`<login>:<ticket>`) which carries a uniqueness constraint, so a
+/// login containing a colon would let two different terminals produce the same
+/// stored ticket and silently overwrite each other's trades.
+fn clean_mt5_login(raw: Option<&str>) -> AppResult<Option<String>> {
+    let Some(value) = blank_to_none(raw) else {
+        return Ok(None);
+    };
+    if value.len() > MAX_MT5_LOGIN_LEN {
+        return Err(AppError::BadRequest(format!(
+            "mt5_login too long (max {MAX_MT5_LOGIN_LEN} characters)"
+        )));
+    }
+    if !value.chars().all(|c| c.is_ascii_digit()) {
+        return Err(AppError::BadRequest(
+            "mt5_login must contain digits only".into(),
+        ));
+    }
+    Ok(Some(value))
+}
+
+/// Trim, and map an empty result to `None` so blank input stores SQL NULL
+/// rather than an empty string — the partial unique index on `mt5_login`
+/// ignores NULLs but would treat several empty strings as duplicates.
+fn blank_to_none(raw: Option<&str>) -> Option<String> {
+    raw.map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+}
+
+/// Translate the `mt5_login` unique-index violation into a 409 the caller can
+/// act on, instead of an opaque 500.
+fn map_account_error(e: sqlx::Error) -> AppError {
+    if let sqlx::Error::Database(db_err) = &e {
+        if db_err.is_unique_violation() {
+            return AppError::Conflict(
+                "un autre compte déclare déjà ce login MT5".into(),
+            );
+        }
+    }
+    AppError::Database(e)
 }
