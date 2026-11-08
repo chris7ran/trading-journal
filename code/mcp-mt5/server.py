@@ -404,11 +404,57 @@ class RequireToken:
         await self._app(scope, receive, send)
 
 
+def transport_security(extra_hosts: list[str], port: int) -> Any:
+    """DNS rebinding protection, widened to the names we are published under.
+
+    The SDK rejects any request whose `Host` header it does not recognise,
+    answering `421 Invalid Host header`. The default list is loopback only,
+    which is right for a server reached directly — but `tailscale serve`
+    forwards the browser's original host, so the tailnet name has to be
+    declared or every proxied call is refused.
+
+    The names stay out of the repository: this takes them from `--allowed-host`
+    or `MCP_MT5_ALLOWED_HOSTS`, because a machine name and a tailnet are
+    exactly the kind of detail a public repository should not carry.
+
+    Turning the protection off entirely would be the lazy fix and a bad one:
+    it is what stops a web page the user happens to visit from aiming requests
+    at this server through their own browser.
+    """
+    from mcp.server.transport_security import TransportSecuritySettings
+
+    # The Host header carries the port whenever it is not the scheme default,
+    # so both spellings are registered.
+    hosts = ["127.0.0.1", "localhost", f"127.0.0.1:{port}", f"localhost:{port}"]
+    for host in extra_hosts:
+        host = host.strip()
+        if host and host not in hosts:
+            hosts.append(host)
+
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=hosts,
+        # An absent Origin passes; these cover a client that sends one.
+        allowed_origins=[f"https://{h}" for h in hosts] + [f"http://{h}" for h in hosts],
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Pont MCP en lecture seule vers MetaTrader 5")
     parser.add_argument("--config", type=Path, default=None, help="chemin de accounts.toml")
     parser.add_argument("--host", default="127.0.0.1", help="interface d'écoute")
     parser.add_argument("--port", type=int, default=8765, help="port d'écoute")
+    parser.add_argument(
+        "--allowed-host",
+        action="append",
+        default=[],
+        metavar="HOTE[:PORT]",
+        help=(
+            "nom public accepté dans l'en-tête Host, répétable. "
+            "Indispensable derrière tailscale serve, qui transmet le nom "
+            "d'origine. Complète MCP_MT5_ALLOWED_HOSTS."
+        ),
+    )
     args = parser.parse_args()
 
     token = os.environ.get("MCP_MT5_TOKEN", "").strip()
@@ -467,12 +513,21 @@ def main() -> int:
     # starts its session manager. Mounting it inside a Starlette app would
     # swallow that lifespan and the server would accept connections it could
     # never answer.
-    app = RequireToken(mcp.streamable_http_app(), token)
+    extra_hosts = [
+        *args.allowed_host,
+        *[h for h in os.environ.get("MCP_MT5_ALLOWED_HOSTS", "").split(",") if h.strip()],
+    ]
+    app = RequireToken(
+        mcp.streamable_http_app(transport_security=transport_security(extra_hosts, args.port)),
+        token,
+    )
     print(
         f"pont MCP MT5 sur http://{args.host}:{args.port}/mcp — "
         f"comptes : {', '.join(bridge.aliases)}",
         file=sys.stderr,
     )
+    if extra_hosts:
+        print(f"hôtes publics acceptés : {', '.join(extra_hosts)}", file=sys.stderr)
     try:
         uvicorn.run(app, host=args.host, port=args.port, log_level="info")
     finally:

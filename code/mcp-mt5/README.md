@@ -80,6 +80,27 @@ tailscale serve --bg --https=8443 http://127.0.0.1:8765
 Côté client, l'URL est `https://<machine>.<tailnet>.ts.net:8443/mcp`, avec
 l'en-tête `Authorization: Bearer <MCP_MT5_TOKEN>`.
 
+### Déclarer le nom public
+
+Derrière un proxy, il faut annoncer le nom sous lequel le serveur est joint,
+sans quoi la protection anti-DNS-rebinding répond `421 Invalid Host header` :
+Tailscale transmet l'en-tête `Host` d'origine, que le serveur ne reconnaît
+pas.
+
+```powershell
+$env:MCP_MT5_ALLOWED_HOSTS = "mamachine.montailnet.ts.net:8443"
+py -3.12 server.py
+```
+
+ou, de façon équivalente, `--allowed-host mamachine.montailnet.ts.net:8443`,
+répétable. Le nom passe par l'environnement ou la ligne de commande et jamais
+par un fichier suivi : un nom de machine et un tailnet n'ont rien à faire dans
+un dépôt public.
+
+Désactiver la protection serait la correction paresseuse et une mauvaise idée :
+c'est elle qui empêche une page web visitée par hasard de viser ce serveur à
+travers le navigateur de la machine.
+
 Le jeton est une défense de second rideau, pas le verrou principal : c'est
 l'authentification des machines du tailnet qui filtre réellement les accès. Il
 couvre le cas que cette couche ne peut pas couvrir — un autre processus tournant
