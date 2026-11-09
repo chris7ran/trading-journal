@@ -164,6 +164,22 @@ Un cas mérite attention : quand le prix est passé de l'autre côté de l'entr�
 proche. Le plan le signale, parce qu'un chiffre flatteur est le plus dangereux
 au moment précis où le scénario se dégrade.
 
+### Deux niveaux d'avertissement
+
+Un avertissement qui se déclenche sur tous les plans finit par ne plus être
+lu, et une confirmation systématiquement requise finit cliquée sans réflexion
+— c'est ainsi qu'on perd le bénéfice d'avoir demandé.
+
+Ne demandent un **oui explicite** que les remarques disant quelque chose que
+le ratio ne dit pas : le prix passé de l'autre côté de l'entrée, et le volume
+plafonné par le broker, qui signifie que le risque réel n'est plus celui
+demandé.
+
+La simple **dérive de prix** reste informative. Le prix bouge toujours entre
+la lecture d'une idée et son chiffrage, et sa conséquence *est* la perte de
+ratio — déjà mesurée, déjà classée en zones. Si elle compte vraiment, la zone
+passe orange d'elle-même et c'est elle qui réclame un humain.
+
 ### Deux couches de garde-fous
 
 Celles du pont, dans `accounts.toml`, s'appliquent **toujours** : risque par

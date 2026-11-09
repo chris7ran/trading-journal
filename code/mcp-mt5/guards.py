@@ -77,8 +77,8 @@ class AccountState:
 
 @dataclass
 class Finding:
-    #: `block` refuses outright. `warn` is shown and requires the human to
-    #: say yes explicitly.
+    #: `block` refuses outright. `warn` requires an explicit yes. `info` is
+    #: displayed and demands nothing.
     level: str
     code: str
     message: str
@@ -110,6 +110,9 @@ class Verdict:
     def warn(self, code: str, message: str) -> None:
         self.findings.append(Finding("warn", code, message))
 
+    def info(self, code: str, message: str) -> None:
+        self.findings.append(Finding("info", code, message))
+
 
 def check(
     *,
@@ -135,8 +138,12 @@ def check(
     _margin(verdict, state, margin_required)
     _prop(verdict, sized, prop)
 
+    # The plan's own notes keep the level it gave them: it is the only layer
+    # that knows whether a remark duplicates something the ratio already says.
     for warning in sized.warnings:
-        verdict.warn("plan", warning)
+        verdict.findings.append(
+            Finding(warning.level, warning.code, warning.message)
+        )
 
     return verdict
 

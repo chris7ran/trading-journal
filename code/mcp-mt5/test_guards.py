@@ -262,10 +262,23 @@ def test_tous_les_refus_sont_rendus_pas_seulement_le_premier():
     assert {"risk_per_trade", "too_many_plans", "no_quote"} <= codes(v)
 
 
-def test_les_avertissements_du_plan_remontent_dans_le_verdict():
+def test_une_derive_simple_ninterrompt_pas_le_verdict():
+    # Le défaut trouvé au premier essai en conditions réelles : une dérive de
+    # 53 centimes faisait passer un plan vert en « à confirmer ».
     tardif = sized(entry=26_280.0, market_price=26_300.0)
     v = check(sized=tardif)
-    assert any(f.code == "plan" for f in v.findings)
+    assert any(f.code == "drift" and f.level == "info" for f in v.findings)
+    assert not v.needs_confirmation
+    assert v.decision == "accepté"
+
+
+def test_un_prix_passe_de_lautre_cote_demande_toujours_un_oui():
+    # Celui-là dit ce que le ratio ne peut pas dire : la zone est verte alors
+    # que le scénario est en train d'être invalidé.
+    retourne = sized(entry=26_320.0, market_price=26_300.0)
+    v = check(sized=retourne)
+    assert any(f.code == "past_entry" and f.level == "warn" for f in v.findings)
+    assert v.decision == "à confirmer"
 
 
 if __name__ == "__main__":

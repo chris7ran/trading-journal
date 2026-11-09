@@ -73,6 +73,23 @@ class Thresholds:
 
 
 @dataclass(frozen=True)
+class PlanWarning:
+    """Something worth saying about a plan, and how loudly.
+
+    The distinction matters more than it looks. A note that fires on every
+    plan stops being read, and a confirmation that is always required stops
+    being a decision — which is how the benefit of asking is lost. So only
+    what the reward-to-risk cannot already express is allowed to demand a
+    human yes.
+    """
+
+    code: str
+    #: `info` is displayed and nothing more. `warn` requires an explicit yes.
+    level: str
+    message: str
+
+
+@dataclass(frozen=True)
 class Leg:
     index: int
     volume: float
@@ -101,7 +118,7 @@ class SizedPlan:
     #: The same figure at the entry originally asked for, when that differs.
     planned_blended_r: float | None
     zone: str  # "green" | "amber" | "red"
-    warnings: list[str] = field(default_factory=list)
+    warnings: list[PlanWarning] = field(default_factory=list)
 
     @property
     def degradation(self) -> float | None:
@@ -207,7 +224,7 @@ def _entry_reference(
     entry: float | None,
     entry_range: tuple[float, float] | None,
     stop_loss: float,
-    warnings: list[str],
+    warnings: list[PlanWarning],
 ) -> float:
     """Decide which price the plan is sized from, and flag how we got there.
 
@@ -217,39 +234,52 @@ def _entry_reference(
     if entry_range is not None:
         low, high = sorted(entry_range)
         if market_price > high:
-            missed = market_price - high
             if direction == LONG:
-                warnings.append(
-                    f"entrée tardive : le prix a dépassé le haut de la zone de "
-                    f"{missed:.2f}, le ratio en souffre"
-                )
+                _note_drift(warnings, market_price - high)
             else:
                 _warn_toward_stop(direction, warnings, market_price, high, stop_loss)
         elif market_price < low:
-            missed = low - market_price
             if direction == SHORT:
-                warnings.append(
-                    f"entrée tardive : le prix a dépassé le bas de la zone de "
-                    f"{missed:.2f}, le ratio en souffre"
-                )
+                _note_drift(warnings, low - market_price)
             else:
                 _warn_toward_stop(direction, warnings, market_price, low, stop_loss)
     elif entry is not None:
         drift = market_price - entry
         late = (direction == LONG and drift > 0) or (direction == SHORT and drift < 0)
         if late:
-            warnings.append(
-                f"le prix s'est éloigné de {abs(drift):.2f} depuis l'entrée prévue"
-            )
+            _note_drift(warnings, abs(drift))
         elif abs(drift) > 0:
             _warn_toward_stop(direction, warnings, market_price, entry, stop_loss)
 
     return market_price
 
 
+def _note_drift(warnings: list[PlanWarning], distance: float) -> None:
+    """Say that the price moved away from the planned entry — and no more.
+
+    Informational on purpose. The price always moves between reading an idea
+    and pricing it, so demanding a confirmation for that alone would demand
+    one on nearly every real plan, and a confirmation that is always required
+    is one that gets clicked without reading.
+
+    The drift has no consequence of its own: its consequence *is* the loss of
+    reward-to-risk, which is already measured and already sorted into three
+    zones. If the drift matters, the zone turns amber by itself and that is
+    what asks for a human. Raising it here as well would count the same fact
+    twice.
+    """
+    warnings.append(
+        PlanWarning(
+            code="drift",
+            level="info",
+            message=f"le prix s'est éloigné de {distance:.2f} depuis l'entrée prévue",
+        )
+    )
+
+
 def _warn_toward_stop(
     direction: str,
-    warnings: list[str],
+    warnings: list[PlanWarning],
     market_price: float,
     edge: float,
     stop_loss: float,
@@ -260,6 +290,10 @@ def _warn_toward_stop(
     improves — the stop is nearer, so the same targets are worth more R. That
     reading flatters a trade whose premise may already be failing, which is
     exactly when a number saying "excellent" is most dangerous.
+
+    This one does demand a yes, because it is precisely what the ratio cannot
+    say: the zone will read green while the setup is on its way to being
+    invalidated.
     """
     between = (direction == LONG and stop_loss < market_price < edge) or (
         direction == SHORT and edge < market_price < stop_loss
@@ -267,9 +301,15 @@ def _warn_toward_stop(
     if between:
         travelled = abs(edge - market_price) / max(abs(edge - stop_loss), 1e-9)
         warnings.append(
-            f"le prix est déjà passé de l'autre côté de l'entrée, à {travelled:.0%} "
-            f"du chemin vers le stop : le ratio s'améliore mécaniquement alors que "
-            f"le scénario se dégrade"
+            PlanWarning(
+                code="past_entry",
+                level="warn",
+                message=(
+                    f"le prix est déjà passé de l'autre côté de l'entrée, à "
+                    f"{travelled:.0%} du chemin vers le stop : le ratio s'améliore "
+                    f"mécaniquement alors que le scénario se dégrade"
+                ),
+            )
         )
 
 
@@ -353,7 +393,7 @@ def _size(
     value_per_point: float,
     spec: SymbolSpec,
     leg_count: int,
-    warnings: list[str],
+    warnings: list[PlanWarning],
 ) -> float:
     """Volume that risks `risk_amount` if the stop is hit, rounded to the step.
 
@@ -368,9 +408,17 @@ def _size(
     volume = _floor_to_step(raw, spec.volume_step)
 
     if volume > spec.volume_max:
+        # Demands a yes: the trade no longer carries the risk that was asked
+        # for, and nothing else in the output says so.
         warnings.append(
-            f"volume plafonné à {spec.volume_max} par le broker : le risque réel "
-            f"sera inférieur à celui demandé"
+            PlanWarning(
+                code="volume_capped",
+                level="warn",
+                message=(
+                    f"volume plafonné à {spec.volume_max} par le broker : le risque "
+                    f"réel sera inférieur à celui demandé"
+                ),
+            )
         )
         volume = _floor_to_step(spec.volume_max, spec.volume_step)
 

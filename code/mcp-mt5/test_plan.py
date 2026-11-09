@@ -97,7 +97,10 @@ def test_larrondi_se_fait_toujours_vers_le_bas():
 def test_le_volume_plafonne_par_le_broker_est_signale():
     p = build(equity=100_000_000.0)
     assert p.total_volume == 150.0
-    assert any("plafonné" in w for w in p.warnings)
+    w = next(w for w in p.warnings if w.code == "volume_capped")
+    # Demande un oui : le risque réel n'est plus celui demandé, et rien
+    # d'autre dans la sortie ne le dit.
+    assert w.level == "warn"
 
 
 def test_un_risque_trop_petit_pour_le_minimum_est_refuse():
@@ -193,7 +196,7 @@ def test_onze_points_de_retard_posent_le_ratio_sur_le_seuil():
     p = scalefx(26_311.0)
     assert p.zone == "green"
     assert 0.79 < p.blended_r < 0.81
-    assert any("éloigné" in w for w in p.warnings)
+    assert any(w.code == "drift" for w in p.warnings)
 
 
 def test_vingt_points_de_retard_font_basculer_en_zone_dalerte():
@@ -233,7 +236,8 @@ def test_un_prix_parti_vers_le_stop_est_signale_malgre_un_meilleur_ratio():
     # chiffre flatteur est dangereux.
     p = scalefx(26_250.0)
     assert p.blended_r > 1.0
-    assert any("autre côté" in w for w in p.warnings)
+    w = next(w for w in p.warnings if w.code == "past_entry")
+    assert w.level == "warn"
 
 
 def test_une_zone_dentree_traversee_vers_le_bas_declenche_le_meme_signal():
@@ -243,7 +247,7 @@ def test_une_zone_dentree_traversee_vers_le_bas_declenche_le_meme_signal():
         entry_range=(26_280.0, 26_320.0),
         market_price=26_240.0,
     )
-    assert any("autre côté" in w for w in p.warnings)
+    assert any(w.code == "past_entry" for w in p.warnings)
 
 
 def test_dans_la_zone_dentree_aucun_avertissement():
@@ -372,6 +376,27 @@ def test_les_seuils_se_reglent_par_compte():
     )
     assert p.zone == "amber"  # 1,0 passe sous un seuil vert à 1,2
 
+
+# --- Niveau des avertissements ------------------------------------------------
+
+
+def test_une_simple_derive_de_prix_ninterrompt_personne():
+    # Le prix bouge toujours entre la lecture d'une idée et son chiffrage.
+    # Exiger une confirmation pour ça seul en exigerait une sur presque tous
+    # les plans réels, et une confirmation systématique finit cliquée sans
+    # être lue.
+    p = scalefx(26_305.0)
+    derive = next(w for w in p.warnings if w.code == "drift")
+    assert derive.level == "info"
+    assert p.zone == "green"
+
+
+def test_une_derive_qui_compte_vraiment_se_voit_dans_la_zone():
+    # Si la dérive a une conséquence, elle est déjà dans le ratio. C'est la
+    # zone qui réclame un humain, pas l'avertissement.
+    p = scalefx(26_320.0)
+    assert all(w.level == "info" for w in p.warnings)
+    assert p.zone == "amber"
 
 if __name__ == "__main__":
     import sys
