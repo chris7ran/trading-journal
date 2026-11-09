@@ -331,6 +331,59 @@ Le compte du journal doit déclarer son login MT5 — la colonne `mt5_login` —
 sans quoi `/ingest/trades` refuse le lot. C'est volontaire : un compte qui ne
 déclare aucun terminal est inatteignable par ce chemin.
 
+## Bot Telegram
+
+Tu transfères un signal, il le chiffre, tu confirmes d'un appui.
+
+En **long polling** : le service appelle Telegram, Telegram ne rappelle
+jamais. Aucun port ouvert, aucun webhook, aucun nom de domaine.
+
+### Pourquoi le transfert et pas la lecture automatique
+
+Un bot Telegram **ne peut pas rejoindre un canal dont il n'est pas membre**, et
+seul un administrateur du canal peut l'y ajouter. La lecture automatique d'un
+canal de signaux tiers est donc impossible par un bot — pas difficile :
+impossible. La seule autre voie serait un client connecté avec le compte
+personnel, qui donnerait accès à toutes les conversations : bien au-delà de ce
+que ce projet demande.
+
+Le transfert manuel n'est donc pas un pis-aller. Il est aussi, accessoirement,
+le premier contrôle humain de la chaîne.
+
+### Ce que le bot ne fait pas
+
+Il ne décide rien. Il lit, demande un chiffrage au pont, affiche le verdict
+des garde-fous, et attend. Un message reçu est une **donnée, jamais une
+commande** : un canal tiers ne doit pas pouvoir déclencher un ordre parce que
+quelqu'un y a écrit la bonne phrase.
+
+Tout expéditeur autre que le propriétaire est ignoré **en silence** —
+répondre confirmerait l'existence du bot à qui l'a trouvé par hasard.
+
+### Les trois formats lus
+
+| Émetteur | Particularités |
+|---|---|
+| Scale FX | `XAU/USD`, fourchette `4053 - 4049`, cibles `TP 1:` avec espace |
+| FX CLUB | libellés français, deux cibles, stop écrit **après** les cibles |
+| goldmind | `PE` pour l'entrée, `SL : 26960 -110` où le second nombre est la distance |
+
+La fourchette d'entrée garde **l'ordre d'écriture**, et c'est le premier
+nombre qui sert de référence. Ce n'est pas un détail : sur l'exemple Scale FX,
+le premier bord donne un R moyen de 1,0 et le second de 3,0. Leur propre guide
+tranche — « all 3 TP = around +1R » n'est vrai que depuis le premier.
+
+### Configuration
+
+```powershell
+$env:TELEGRAM_BOT_TOKEN = "<le jeton de BotFather>"
+$env:TELEGRAM_OWNER_ID  = "<ton identifiant, donné par @userinfobot>"
+py -3.12 bot.py
+```
+
+`MCP_MT5_URL` et `MCP_MT5_TOKEN` sont repris de l'environnement du pont.
+`BOT_ACCOUNT` choisit le compte, `BOT_RISK_PCT` le risque par plan.
+
 ## Tests
 
 Le dimensionnement et les garde-fous ne dépendent ni de MT5 ni du réseau, donc
@@ -341,9 +394,10 @@ py -3.12 test_plan.py
 py -3.12 test_guards.py
 py -3.12 test_orders.py
 py -3.12 test_watcher.py
+py -3.12 test_signals.py
 ```
 
-Cent quinze cas, dont chaque refus. Un garde-fou qu'on ne sait pas déclencher en
+Cent quarante-deux cas, dont chaque refus. Un garde-fou qu'on ne sait pas déclencher en
 test est un garde-fou qu'on découvrira cassé le jour où il devait servir.
 
 Les envois se testent avec un faux MT5 : ce qu'il faut vérifier n'est pas que
