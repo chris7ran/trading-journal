@@ -759,9 +759,44 @@ def _cancel(state: _State, magic: int) -> dict:
     return resultat
 
 
+def _modify_stop(
+    state: _State,
+    ticket: str,
+    symbol: str,
+    stop_loss: float,
+    take_profit: float,
+) -> dict:
+    """Remonter le stop d'une jambe, en conservant sa cible.
+
+    Tracé au même titre qu'un envoi : déplacer un stop est une décision qui
+    change le risque d'une position ouverte, et un journal d'audit qui ne
+    retiendrait que les ouvertures raconterait l'histoire à moitié.
+    """
+    if state.orders is None or state.audit is None:
+        raise WorkerError("exécution non activée pour ce compte")
+
+    state.audit.write(
+        "modify_intent",
+        {"ticket": ticket, "symbol": symbol, "stop_loss": stop_loss,
+         "take_profit": take_profit},
+    )
+    try:
+        resultat = state.orders.modify_stop(
+            state.mt5, symbol=symbol, ticket=int(ticket),
+            stop_loss=float(stop_loss), take_profit=float(take_profit),
+        )
+    except Exception as exc:  # noqa: BLE001
+        state.audit.write("modify_failed", {"ticket": ticket, "error": str(exc)})
+        raise WorkerError(f"stop du ticket {ticket} non déplacé : {exc}") from exc
+
+    state.audit.write("modify_result", {"ticket": ticket, **resultat})
+    return resultat
+
+
 _EXECUTION_HANDLERS = {
     "execute": _execute,
     "cancel": _cancel,
+    "modify_stop": _modify_stop,
 }
 
 _HANDLERS = {

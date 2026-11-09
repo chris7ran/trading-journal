@@ -33,6 +33,7 @@ from typing import Any
 import config
 import guards
 import plan
+import watcher
 import worker
 
 #: Reported to clients in the initialize result. The SDK no longer substitutes
@@ -888,8 +889,6 @@ def main() -> int:
     )
     register_tools(mcp, bridge)
 
-    import uvicorn
-
     # Wrapped, not mounted: the token guard forwards every non-HTTP scope
     # untouched, so the MCP app's own lifespan still runs under uvicorn and
     # starts its session manager. Mounting it inside a Starlette app would
@@ -911,10 +910,50 @@ def main() -> int:
     if extra_hosts:
         print(f"hôtes publics acceptés : {', '.join(extra_hosts)}", file=sys.stderr)
     try:
-        uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+        asyncio.run(_serve(app, bridge, args))
     finally:
         bridge.stop_all()
     return 0
+
+
+async def _serve(app: Any, bridge: Bridge, args) -> None:
+    """Servir, avec un watcher par compte qui exécute.
+
+    Le watcher tourne dans ce processus et partage les mêmes poignées de
+    terminal, donc le verrou par compte sérialise naturellement ses appels
+    avec ceux des outils — pas de requête concurrente sur un tube qui n'en
+    accepte qu'une.
+
+    Ce n'est pas un point de défaillance critique : les cibles et les stops
+    initiaux vivent chez le broker. Si ce processus meurt, les sorties partent
+    quand même, et ce qu'on perd est seulement l'amélioration du stop après
+    une première sortie.
+    """
+    import uvicorn
+
+    serveur = uvicorn.Server(
+        uvicorn.Config(app, host=args.host, port=args.port, log_level="info")
+    )
+
+    surveillances = [
+        asyncio.create_task(
+            watcher.watch(bridge.get(alias)), name=f"watcher-{alias}"
+        )
+        for alias in bridge.aliases
+        if bridge.get(alias).account.execution_enabled
+    ]
+    if surveillances:
+        print(
+            f"watcher actif sur : {', '.join(t.get_name()[8:] for t in surveillances)}",
+            file=sys.stderr,
+        )
+
+    try:
+        await serveur.serve()
+    finally:
+        for tache in surveillances:
+            tache.cancel()
+        await asyncio.gather(*surveillances, return_exceptions=True)
 
 
 if __name__ == "__main__":
