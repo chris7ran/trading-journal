@@ -793,10 +793,72 @@ def _modify_stop(
     return resultat
 
 
+def _close(
+    state: _State,
+    magic: int | None = None,
+    ticket: str | None = None,
+) -> dict:
+    """Fermer une position, un plan entier, ou tout ce qui est ouvert.
+
+    Sans `magic` ni `ticket`, ferme tout — y compris ce qui a été ouvert à la
+    main dans le terminal. C'est assumé : « tout fermer » doit vouloir dire
+    tout, sinon il reste une exposition que l'on croit soldée. L'appelant est
+    chargé de faire confirmer.
+
+    Les positions sont fermées une par une et l'échec de l'une n'arrête pas
+    les autres. Réduire l'exposition est la direction sûre : s'interrompre à
+    la première difficulté laisserait ouvert ce qui aurait pu être fermé.
+    """
+    if state.orders is None or state.audit is None:
+        raise WorkerError("exécution non activée pour ce compte")
+
+    mt5 = state.mt5
+    positions = list(mt5.positions_get() or ())
+    if magic is not None:
+        positions = [p for p in positions if p.magic == int(magic)]
+    if ticket is not None:
+        positions = [p for p in positions if str(p.ticket) == str(ticket)]
+
+    cible = {"magic": magic, "ticket": ticket, "count": len(positions),
+             "tickets": [str(p.ticket) for p in positions]}
+    state.audit.write("close_intent", cible)
+
+    if not positions:
+        state.audit.write("close_result", {**cible, "closed": [], "failed": []})
+        return {"closed": [], "failed": [], "message": "aucune position correspondante"}
+
+    fermees, echecs = [], []
+    for position in positions:
+        try:
+            resultat = state.orders.close_position(
+                mt5,
+                symbol=position.symbol,
+                ticket=position.ticket,
+                volume=position.volume,
+                direction="LONG" if position.type == mt5.POSITION_TYPE_BUY else "SHORT",
+                magic=position.magic,
+            )
+            fermees.append({
+                "ticket": str(position.ticket),
+                "symbol": position.symbol,
+                "volume": position.volume,
+                "profit": position.profit,
+                "price": resultat.get("price"),
+            })
+        except Exception as exc:  # noqa: BLE001
+            echecs.append({"ticket": str(position.ticket), "error": str(exc)})
+
+    resultat = {"closed": fermees, "failed": echecs,
+                "realised": round(sum(f["profit"] for f in fermees), 2)}
+    state.audit.write("close_result", {**cible, **resultat})
+    return resultat
+
+
 _EXECUTION_HANDLERS = {
     "execute": _execute,
     "cancel": _cancel,
     "modify_stop": _modify_stop,
+    "close": _close,
 }
 
 _HANDLERS = {

@@ -434,6 +434,52 @@ def register_tools(mcp: Any, bridge: Bridge) -> None:
         )
 
     @mcp.tool()
+    async def close_positions(
+        account: str,
+        magic: int | None = None,
+        ticket: str | None = None,
+        confirm: bool = False,
+    ) -> dict:
+        """Fermer une position, un plan entier, ou tout ce qui est ouvert.
+
+        `ticket` ferme une position précise, `magic` ferme toutes les jambes
+        d'un plan. Sans ni l'un ni l'autre, **tout** est fermé — y compris ce
+        qui a été ouvert à la main dans le terminal, parce qu'une exposition
+        qu'on croit soldée est pire qu'une exposition connue.
+
+        Fermer tout exige `confirm`. Les deux autres formes non : réduire une
+        exposition est la direction sûre, et demander une confirmation pour
+        sortir d'un trade reviendrait à mettre un obstacle là où il faut aller
+        vite.
+
+        Les positions sont fermées une par une et un échec n'arrête pas les
+        suivantes : s'interrompre laisserait ouvert ce qui pouvait l'être.
+        """
+        terminal = bridge.get(account)
+        if not terminal.account.execution_enabled:
+            return {
+                "account": account,
+                "error": "l'exécution n'est pas activée pour ce compte",
+            }
+        if magic is None and ticket is None and not confirm:
+            ouvertes = await terminal.call("positions")
+            return {
+                "account": account,
+                "closed": [],
+                "needs_confirmation": True,
+                "open_positions": len(ouvertes),
+                "message": (
+                    f"{len(ouvertes)} position(s) seraient fermées, y compris "
+                    f"celles ouvertes à la main. Relancez avec confirm=true."
+                ),
+            }
+
+        resultat = await terminal.call(
+            "close", magic=int(magic) if magic is not None else None, ticket=ticket
+        )
+        return {"account": account, **resultat}
+
+    @mcp.tool()
     async def cancel_plan(account: str, magic: int) -> dict:
         """Retirer les ordres en attente d'un plan, par son `magic`.
 

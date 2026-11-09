@@ -169,6 +169,52 @@ def pending_leg(
     return _send(mt5, request)
 
 
+def close_position(
+    mt5: Any,
+    *,
+    symbol: str,
+    ticket: int,
+    volume: float,
+    direction: str,
+    magic: int = 0,
+    deviation: int = DEFAULT_DEVIATION,
+) -> dict:
+    """Fermer une position ouverte, en tout ou en partie.
+
+    MT5 n'a pas d'action « fermer » : on envoie un ordre marché **en sens
+    inverse** portant le ticket de la position dans le champ `position`. Sans
+    ce champ, en mode couverture, le même ordre ouvrirait une seconde position
+    opposée au lieu de solder la première — deux positions qui se neutralisent
+    en apparence, mais qui paient deux spreads et deux swaps, et qu'aucune des
+    deux ne protège.
+
+    Un `volume` inférieur à celui de la position la réduit au lieu de la
+    fermer. C'est le seul endroit du pont où une fermeture partielle est
+    possible, et elle n'est pas utilisée par les plans : leurs sorties
+    partielles sont des jambes distinctes, déposées chez le broker.
+    """
+    is_long = direction.upper() in ("LONG", "BUY")
+    tick = mt5.symbol_info_tick(symbol)
+    if tick is None or not (tick.bid and tick.ask):
+        raise OrderError(f"aucune cotation pour {symbol}")
+
+    request = {
+        "action": TRADE_ACTION_DEAL,
+        "symbol": symbol,
+        "volume": float(volume),
+        # Sens inverse de la position : on vend ce qu'on a acheté.
+        "type": ORDER_TYPE_SELL if is_long else ORDER_TYPE_BUY,
+        "position": int(ticket),
+        "price": tick.bid if is_long else tick.ask,
+        "deviation": deviation,
+        "magic": int(magic),
+        "comment": "close",
+        "type_time": ORDER_TIME_GTC,
+        "type_filling": filling_for(mt5, symbol),
+    }
+    return _send(mt5, request)
+
+
 def modify_stop(
     mt5: Any,
     *,

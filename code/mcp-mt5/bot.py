@@ -121,6 +121,12 @@ class Bot:
         if texte.strip().startswith("/"):
             self._commande(chat, texte.strip())
             return
+        if _demande_fermeture(texte):
+            # Avant l'analyseur de signaux : « ferme tout » n'a ni sens ni
+            # instrument, et serait rejeté comme un message illisible alors
+            # que c'est l'ordre le plus clair qu'on puisse donner.
+            self._fermer(chat)
+            return
         if message.get("photo") and not texte.strip():
             self._envoyer(
                 chat,
@@ -138,12 +144,16 @@ class Bot:
                 "Transfère-moi un signal et je le chiffre : taille de position, "
                 "découpage en jambes, ratio et verdict des garde-fous.\n\n"
                 "Rien n'est envoyé sans que tu appuies sur un bouton.\n\n"
-                f"Compte : {self.compte}\n/etat pour le solde et les positions.",
+                "« ferme tout » ou /fermer pour solder ce qui est ouvert.\n"
+                "/etat pour le solde et les positions.\n\n"
+                f"Compte : {self.compte}",
             )
         elif texte.startswith("/etat"):
             self._etat(chat)
+        elif texte.startswith("/fermer"):
+            self._fermer(chat)
         else:
-            self._envoyer(chat, "Commandes : /aide, /etat")
+            self._envoyer(chat, "Commandes : /aide, /etat, /fermer")
 
     def _etat(self, chat: int) -> None:
         try:
@@ -164,6 +174,44 @@ class Bot:
                 f"@ {p['open_price']} → {p['profit']:+.2f}"
             )
         self._envoyer(chat, "\n".join(lignes))
+
+    def _fermer(self, chat: int, magic: int | None = None) -> None:
+        """Proposer la fermeture : la liste d'abord, l'action après.
+
+        Afficher ce qui va être fermé avant de le fermer n'est pas une
+        précaution de principe. « Tout fermer » inclut ce qui a été ouvert à
+        la main dans le terminal, et c'est exactement le genre de position
+        qu'on oublie avoir.
+        """
+        try:
+            positions = self.client.call("get_positions", {"account": self.compte})
+        except mcpclient.McpError as exc:
+            self._envoyer(chat, f"Pont injoignable : {exc}")
+            return
+
+        if not positions["count"]:
+            self._envoyer(chat, "Aucune position ouverte.")
+            return
+
+        lignes = [f"*{positions['count']} position(s)* sur {self.compte}", ""]
+        flottant = 0.0
+        for p in positions["positions"]:
+            flottant += p["profit"]
+            origine = f"plan {p['magic']}" if p["magic"] else "ouverte à la main"
+            lignes.append(
+                f"· {p['journal_symbol']} {p['direction']} {p['volume']} "
+                f"@ {p['open_price']} → {p['profit']:+.2f}  _{origine}_"
+            )
+        lignes += ["", f"Flottant total : *{flottant:+.2f}*"]
+
+        jeton = secrets.token_urlsafe(6)
+        self.propositions[jeton] = Proposition(None, 0.0, time.time())
+        self._envoyer(chat, "\n".join(lignes), boutons={
+            "inline_keyboard": [[
+                {"text": "Tout fermer", "callback_data": f"f:{jeton}"},
+                {"text": "Annuler", "callback_data": f"n:{jeton}"},
+            ]]
+        })
 
     def _chiffrer(self, chat: int, texte: str) -> None:
         try:
@@ -224,6 +272,17 @@ class Bot:
         if action == "n":
             del self.propositions[jeton]
             self._envoyer(chat, "Ignoré.")
+            return
+        if action == "f":
+            del self.propositions[jeton]
+            try:
+                resultat = self.client.call(
+                    "close_positions", {"account": self.compte, "confirm": True}
+                )
+            except mcpclient.McpError as exc:
+                self._envoyer(chat, f"Échec : {exc}")
+                return
+            self._envoyer(chat, _rendre_fermeture(resultat))
             return
 
         signal = proposition.signal
@@ -361,6 +420,37 @@ def _boutons(jeton: str, decision: str) -> dict:
             ignorer,
         ]]
     }
+
+
+#: Ce qui vaut « ferme », dans les formulations qui viennent naturellement
+#: quand on veut sortir vite. Volontairement large : à ce moment-là, on
+#: n'écrit pas une commande, on écrit ce qui vient.
+FERMETURE = (
+    "ferme", "fermer", "close", "sors", "sortir", "solde", "solder",
+    "cloture", "clôture", "cut", "flat",
+)
+
+
+def _demande_fermeture(texte: str) -> bool:
+    mots = texte.lower().split()
+    return bool(mots) and any(m.strip(".,!?") in FERMETURE for m in mots[:3])
+
+
+def _rendre_fermeture(resultat: dict) -> str:
+    if resultat.get("needs_confirmation"):
+        return resultat.get("message", "confirmation requise")
+    fermees = resultat.get("closed", [])
+    if not fermees and not resultat.get("failed"):
+        return "Aucune position à fermer."
+
+    lignes = [f"*{len(fermees)} position(s) fermée(s)*"]
+    for f in fermees:
+        lignes.append(f"· {f['symbol']} {f['volume']} @ {f.get('price')} → {f['profit']:+.2f}")
+    if resultat.get("realised") is not None:
+        lignes.append(f"\nRéalisé : *{resultat['realised']:+.2f}*")
+    for e in resultat.get("failed", []):
+        lignes.append(f"⛔️ ticket {e['ticket']} : {e['error']}")
+    return "\n".join(lignes)
 
 
 def _rendre_envoi(resultat: dict) -> str:

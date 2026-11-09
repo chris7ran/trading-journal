@@ -290,6 +290,65 @@ def test_une_ligne_tronquee_ninvalide_pas_le_fichier():
     assert lignes[-1]["event"] == "ligne_illisible"
     assert any(l["event"] == "order_intent" for l in lignes)
 
+# --- Fermeture ------------------------------------------------------------------
+
+
+def test_fermer_envoie_un_ordre_inverse_portant_le_ticket():
+    # MT5 n'a pas d'action « fermer ». Sans le champ `position`, en mode
+    # couverture, le même ordre ouvrirait une seconde position opposée : deux
+    # positions qui se neutralisent en apparence, paient deux spreads et deux
+    # swaps, et dont aucune ne protège l'autre.
+    mt5 = FauxMT5()
+    orders.close_position(
+        mt5, symbol="GOLD#", ticket=2368700638, volume=0.44, direction="LONG"
+    )
+    envoi = mt5.envoye[0]
+    assert envoi["action"] == orders.TRADE_ACTION_DEAL
+    assert envoi["position"] == 2368700638
+    assert envoi["type"] == orders.ORDER_TYPE_SELL
+    assert envoi["volume"] == 0.44
+
+
+def test_fermer_une_vente_achete():
+    mt5 = FauxMT5()
+    orders.close_position(
+        mt5, symbol="GOLD#", ticket=1, volume=0.3, direction="SHORT"
+    )
+    assert mt5.envoye[0]["type"] == orders.ORDER_TYPE_BUY
+
+
+def test_fermer_sort_au_prix_defavorable():
+    # On solde un achat au bid et une vente à l'ask : c'est le prix auquel le
+    # marché reprend la position, et l'annoncer autrement serait mentir sur
+    # le résultat.
+    mt5 = FauxMT5(bid=4110.40, ask=4110.73)
+    orders.close_position(mt5, symbol="GOLD#", ticket=1, volume=0.3, direction="LONG")
+    assert mt5.envoye[0]["price"] == 4110.40
+    orders.close_position(mt5, symbol="GOLD#", ticket=2, volume=0.3, direction="SHORT")
+    assert mt5.envoye[1]["price"] == 4110.73
+
+
+def test_fermer_respecte_le_mode_dexecution_du_symbole():
+    mt5 = FauxMT5(filling_mode=2)
+    orders.close_position(mt5, symbol="GOLD#", ticket=1, volume=0.3, direction="LONG")
+    assert mt5.envoye[0]["type_filling"] == orders.ORDER_FILLING_IOC
+
+
+def test_un_volume_partiel_reduit_au_lieu_de_fermer():
+    mt5 = FauxMT5()
+    orders.close_position(mt5, symbol="GOLD#", ticket=1, volume=0.2, direction="LONG")
+    assert mt5.envoye[0]["volume"] == 0.2
+
+
+def test_sans_cotation_aucune_fermeture_nest_tentee():
+    mt5 = FauxMT5(bid=0.0, ask=0.0)
+    try:
+        orders.close_position(mt5, symbol="GOLD#", ticket=1, volume=0.3, direction="LONG")
+    except OrderError:
+        assert mt5.envoye == []
+    else:
+        raise AssertionError("un prix nul doit lever avant l'envoi")
+
 
 if __name__ == "__main__":
     import sys
