@@ -32,6 +32,7 @@ from typing import Any
 
 import config
 import guards
+import journal
 import plan
 import watcher
 import worker
@@ -935,9 +936,27 @@ async def _serve(app: Any, bridge: Bridge, args) -> None:
         uvicorn.Config(app, host=args.host, port=args.port, log_level="info")
     )
 
+    # Le journal est optionnel et vit dans l'environnement, jamais dans le
+    # dépôt : son adresse révèle le tailnet et son jeton ouvre une écriture.
+    client = None
+    url = os.environ.get("JOURNAL_URL", "").strip()
+    jeton = os.environ.get("JOURNAL_INGEST_TOKEN", "").strip()
+    if url and jeton:
+        client = journal.Journal(url, jeton)
+        print(f"remontée vers le journal : {url}", file=sys.stderr)
+    elif url or jeton:
+        # Une moitié de configuration est une erreur silencieuse : le watcher
+        # tournerait sans rien remonter, et on le croirait en train de le
+        # faire.
+        print(
+            "JOURNAL_URL et JOURNAL_INGEST_TOKEN vont ensemble : "
+            "remontée désactivée",
+            file=sys.stderr,
+        )
+
     surveillances = [
         asyncio.create_task(
-            watcher.watch(bridge.get(alias)), name=f"watcher-{alias}"
+            watcher.watch(bridge.get(alias), journal=client), name=f"watcher-{alias}"
         )
         for alias in bridge.aliases
         if bridge.get(alias).account.execution_enabled

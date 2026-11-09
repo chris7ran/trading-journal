@@ -167,7 +167,13 @@ def group_by_plan(positions: list[dict], history: list[dict]) -> dict[int, PlanS
     }
 
 
-async def watch(terminal, *, offset: float = 0.0, interval: int = POLL_SECONDS) -> None:
+async def watch(
+    terminal,
+    *,
+    offset: float = 0.0,
+    interval: int = POLL_SECONDS,
+    journal=None,
+) -> None:
     """Boucle de surveillance d'un compte. Tourne jusqu'à annulation.
 
     Toute erreur est consignée et la boucle continue. Un watcher qui s'arrête
@@ -177,7 +183,7 @@ async def watch(terminal, *, offset: float = 0.0, interval: int = POLL_SECONDS) 
     alias = terminal.account.alias
     while True:
         try:
-            await _tour(terminal, offset)
+            await _tour(terminal, offset, journal)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -185,20 +191,27 @@ async def watch(terminal, *, offset: float = 0.0, interval: int = POLL_SECONDS) 
         await asyncio.sleep(interval)
 
 
-async def _tour(terminal, offset: float) -> None:
-    positions = (await terminal.call("positions"))
-    if not positions:
-        return
-
-    # L'historique du jour suffit : un plan dont une jambe est sortie hier
-    # n'a plus de stop à remonter aujourd'hui.
+async def _tour(terminal, offset: float, journal_client=None) -> None:
     from datetime import datetime, timedelta, timezone
 
+    positions = await terminal.call("positions")
+
+    # L'historique de la veille suffit pour décider d'une remontée de stop, et
+    # couvre largement ce qu'il faut pousser au journal : un trade clôturé
+    # avant-hier y est déjà, et l'upsert le reconnaîtrait de toute façon.
     maintenant = datetime.now(timezone.utc)
     depuis = (maintenant - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S")
     history = await terminal.call(
         "history", date_from=depuis, date_to=maintenant.strftime("%Y-%m-%dT%H:%M:%S")
     )
+
+    # La remontée vers le journal d'abord : elle ne dépend pas des stops et
+    # doit avoir lieu même quand il n'y a plus rien d'ouvert à surveiller.
+    if journal_client is not None:
+        await _remonter(terminal, journal_client, positions, history)
+
+    if not positions:
+        return
 
     for state in group_by_plan(positions, history).values():
         # La cible doit repartir avec le stop : MT5 remplace les deux d'un
@@ -217,3 +230,36 @@ async def _tour(terminal, offset: float) -> None:
                 f"stop du ticket {ticket} remonté à {stop}",
                 flush=True,
             )
+
+
+async def _remonter(terminal, journal_client, positions, history) -> None:
+    """Pousser l'état des plans vers le journal.
+
+    L'échec n'interrompt rien : le lot est reconstruit entièrement au tour
+    suivant et le backend fait un upsert, donc un journal injoignable pendant
+    dix minutes se rattrape tout seul. C'est précisément parce que l'envoi est
+    sans état qu'on peut se permettre de ne pas le réessayer ici.
+    """
+    import journal as journal_module
+
+    compte = terminal.account
+    lot = journal_module.to_trades(positions, history, compte.to_journal)
+    if not lot:
+        return
+
+    try:
+        resultat = journal_client.push(compte.login, lot)
+    except journal_module.JournalError as exc:
+        print(f"[watcher {compte.alias}] journal : {exc}", flush=True)
+        return
+
+    # Silencieux quand rien ne change : un watcher qui parle à chaque tour
+    # finit par être filtré, et c'est alors ce qu'il dit d'important qui se
+    # perd avec le reste.
+    if resultat.get("created") or resultat.get("skipped"):
+        print(
+            f"[watcher {compte.alias}] journal : {resultat.get('created', 0)} créé(s), "
+            f"{resultat.get('updated', 0)} mis à jour, "
+            f"{resultat.get('skipped', 0)} ignoré(s)",
+            flush=True,
+        )
