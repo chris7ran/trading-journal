@@ -31,8 +31,17 @@ class ConfigError(Exception):
 DEFAULT_RISK_PCT_MAX = 0.01
 DEFAULT_DAILY_LOSS_PCT_MAX = 0.02
 DEFAULT_MAX_OPEN_PLANS = 1
-DEFAULT_R_GREEN = 0.80
-DEFAULT_R_RED = 0.50
+#: Seuil au-dessus duquel on exécute sans demander. Volontairement bas : un
+#: gabarit qui vaut 1,0 R à l'entrée idéale — celui de Scale FX — ne laisse
+#: que 11 % de retard avant de passer sous 0,80, soit moins de deux minutes de
+#: réaction sur l'or. Un garde-fou qui se déclenche à chaque trade cesse
+#: d'être lu.
+DEFAULT_R_GREEN = 0.70
+
+#: Plancher de refus. Frontière économique et non ergonomique : sur la
+#: distribution d'issues mesurée, l'espérance devient nulle à 0,416 R. En
+#: dessous, prendre le trade perd de l'argent en moyenne.
+DEFAULT_R_RED = 0.45
 DEFAULT_EXPIRY_MINUTES = 30
 
 #: Les clés de `[account.outcomes]`, et le nombre de cibles atteintes qu'elles

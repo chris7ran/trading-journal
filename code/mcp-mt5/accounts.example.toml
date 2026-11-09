@@ -69,8 +69,23 @@ max_open_plans = 1
 #   au-dessus de r_green : exécution normale
 #   entre les deux       : alerte, l'humain tranche
 #   sous r_red           : refus, sans dérogation
-r_green = 0.80
-r_red = 0.50
+# Les valeurs à retenir dépendent du gabarit de la source. Un émetteur dont
+# les signaux valent 1,0 R à l'entrée idéale ne laisse que 11 % de retard
+# avant de passer sous 0,80 — soit, sur un stop de 8 $ en or, quatre-vingt-dix
+# centimes. Mesuré en séance, l'or parcourt cette distance en deux minutes.
+#
+# Traduction du seuil vert en retard toléré, en fraction du stop :
+#   0,80 -> 11 %     0,70 -> 18 %     0,65 -> 21 %     0,60 -> 25 %
+#
+# Baisser le seuil vert ne rend pas les trades meilleurs : l'orange ne refuse
+# rien, il demande un appui. Ce qu'on gagne est de la fluidité, ce qu'on perd
+# est l'avertissement qu'une part de l'espérance est partie.
+r_green = 0.70
+
+# Le plancher rouge, lui, est une frontière économique. Sur la distribution
+# d'issues des 132 trades XAUUSD, l'espérance devient réellement nulle à
+# 0,416 R : en dessous, prendre le trade perd de l'argent en moyenne.
+r_red = 0.45
 
 # Exécution. Éteinte par défaut, et tant qu'elle l'est le processus qui pilote
 # ce terminal n'importe même pas le module d'envoi : la capacité n'existe pas,
