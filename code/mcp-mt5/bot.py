@@ -217,11 +217,12 @@ class Bot:
             return
 
         action, _, jeton = donnee.partition(":")
-        proposition = self.propositions.pop(jeton, None)
+        proposition = self.propositions.get(jeton)
         if proposition is None:
             self._envoyer(chat, "Proposition expirée. Retransfère le signal.")
             return
         if action == "n":
+            del self.propositions[jeton]
             self._envoyer(chat, "Ignoré.")
             return
 
@@ -250,7 +251,20 @@ class Bot:
             self._envoyer(chat, f"Échec : {exc}")
             return
 
-        self._envoyer(chat, _rendre_envoi(resultat))
+        # La proposition n'est consommée que si quelque chose est parti. Un
+        # refus doit laisser l'autre bouton utilisable : le 09/11, un plan
+        # refusé au marché pour cause de ratio dégradé aurait été accepté en
+        # ordre déposé, puisque le dimensionnement part alors du niveau visé.
+        # Obliger à retransférer le signal pour essayer l'autre voie, c'était
+        # perdre les secondes qui font justement la différence.
+        if resultat.get("sent"):
+            self.propositions.pop(jeton, None)
+
+        self._envoyer(
+            chat,
+            _rendre_envoi(resultat),
+            boutons=None if resultat.get("sent") else _boutons(jeton, "à confirmer"),
+        )
 
     def _purger(self) -> None:
         limite = time.time() - PROPOSITION_TTL
@@ -320,15 +334,31 @@ def _rendre(signal: signals.Signal, apercu: dict, entree: float) -> str:
     return "\n".join(lignes)
 
 
-def _boutons(jeton: str, decision: str) -> dict | None:
+def _boutons(jeton: str, decision: str) -> dict:
+    """Les actions offertes, selon le verdict.
+
+    Un plan refusé garde le dépôt. Le refus porte sur l'entrée **au marché** :
+    déposer un ordre au niveau prévu est une autre opération, dimensionnée
+    depuis ce niveau-là, et c'est précisément quand le marché s'est éloigné
+    qu'elle devient le bon choix.
+
+    Le 09/11, un plan est sorti refusé avec, dans le même message, « attendre
+    bat entrer si le prix revient avec au moins 10,5 % de chances » — et aucun
+    bouton pour le faire. Un système qui dit quoi faire sans permettre de le
+    faire est pire qu'un système muet : il donne le sentiment d'avoir décidé.
+    """
+    depot = {"text": "Déposer et attendre", "callback_data": f"a:{jeton}"}
+    ignorer = {"text": "Ignorer", "callback_data": f"n:{jeton}"}
+
     if decision == "refusé":
-        return None
+        return {"inline_keyboard": [[depot, ignorer]]}
+
     envoyer = "Exécuter" if decision == "accepté" else "Exécuter quand même"
     return {
         "inline_keyboard": [[
             {"text": envoyer, "callback_data": f"x:{jeton}"},
-            {"text": "Déposer et attendre", "callback_data": f"a:{jeton}"},
-            {"text": "Ignorer", "callback_data": f"n:{jeton}"},
+            depot,
+            ignorer,
         ]]
     }
 
@@ -353,16 +383,69 @@ def _rendre_envoi(resultat: dict) -> str:
 # --- Démarrage ------------------------------------------------------------------
 
 
+def _decouvrir(token: str) -> int:
+    """Afficher l'identifiant de qui écrit au bot, puis s'arrêter.
+
+    `TELEGRAM_OWNER_ID` sert à ce que le bot n'obéisse qu'à une personne, et
+    c'est un nombre que Telegram ne montre nulle part dans son interface. Le
+    demander à un bot tiers marche, mais ajoute un service à la chaîne pour
+    une information que le bot peut lire lui-même.
+
+    Aucun ordre ne peut partir d'ici : cette fonction ne touche ni au pont ni
+    à MT5, elle lit les messages reçus et les affiche.
+    """
+    print("Envoyez n'importe quel message à votre bot depuis Telegram…", flush=True)
+    offset = 0
+    fin = time.time() + 120
+
+    while time.time() < fin:
+        url = API.format(token=token, method="getUpdates")
+        donnees = urllib.parse.urlencode({"offset": offset, "timeout": 20}).encode()
+        try:
+            with urllib.request.urlopen(
+                urllib.request.Request(url, data=donnees, method="POST"), timeout=30
+            ) as reponse:
+                resultat = json.loads(reponse.read().decode()).get("result", [])
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")[:200]
+            print(f"Telegram refuse le jeton : HTTP {exc.code} — {detail}")
+            return 2
+
+        for update in resultat:
+            offset = update["update_id"] + 1
+            auteur = ((update.get("message") or {}).get("from")) or {}
+            if auteur.get("id"):
+                nom = auteur.get("first_name", "")
+                pseudo = f" @{auteur['username']}" if auteur.get("username") else ""
+                print(f"\nIdentifiant trouvé : {auteur['id']}  ({nom}{pseudo})\n")
+                print("Enregistrez-le, puis relancez le bot :")
+                print(
+                    '  [Environment]::SetEnvironmentVariable('
+                    f'"TELEGRAM_OWNER_ID", "{auteur["id"]}", "User")'
+                )
+                return 0
+
+    print("Aucun message reçu en deux minutes. Le bot a-t-il été démarré "
+          "dans Telegram ?")
+    return 1
+
+
 def main() -> int:
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
     owner = os.environ.get("TELEGRAM_OWNER_ID", "").strip()
-    if not token or not owner.isdigit():
+
+    if not token:
         print(
-            "TELEGRAM_BOT_TOKEN et TELEGRAM_OWNER_ID sont requis.\n"
-            "Le jeton vient de BotFather ; l'identifiant est le tien, que "
-            "@userinfobot affiche.",
+            "TELEGRAM_BOT_TOKEN est requis : écrivez /newbot à @BotFather, ou\n"
+            "/mybots puis « API Token » si le bot existe déjà."
         )
         return 2
+
+    if not owner.isdigit():
+        # Plutôt que de renvoyer vers un bot tiers pour obtenir un numéro :
+        # le bot le demande au sien. Un service de moins dans la chaîne, et
+        # une étape de moins à expliquer.
+        return _decouvrir(token)
 
     client = mcpclient.Client(
         os.environ.get("MCP_MT5_URL", "http://127.0.0.1:8765/mcp"),
