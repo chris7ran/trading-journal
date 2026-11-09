@@ -73,6 +73,40 @@ class Thresholds:
 
 
 @dataclass(frozen=True)
+class Outcomes:
+    """Fréquence mesurée de chaque issue, par compte.
+
+    Mesurée, jamais supposée : sans ces chiffres la comparaison « entrer
+    maintenant ou attendre » n'est pas calculable, et le pont préfère ne rien
+    afficher plutôt qu'afficher une estimation inventée qui aurait exactement
+    la même apparence qu'une vraie.
+
+    `reached` associe un nombre de cibles atteintes à sa fréquence. La clé 0
+    est le point mort : la première cible n'a pas été touchée mais le stop non
+    plus. `stop` est la fréquence de la perte pleine.
+    """
+
+    reached: dict[int, float]
+    stop: float
+
+    def expectancy(self, legs: list["Leg"], total_volume: float) -> float:
+        """Espérance du plan, en multiples du risque.
+
+        Un stop vaut toujours −1 R : le volume est dimensionné pour risquer le
+        montant voulu, donc la perte est constante en argent quelle que soit
+        la distance au stop. Les jambes au-delà de la dernière cible atteinte
+        sortent au point mort, soit 0.
+        """
+        if total_volume <= 0:
+            return 0.0
+        esperance = -self.stop
+        for atteintes, frequence in self.reached.items():
+            gagne = sum(leg.volume * leg.r_multiple for leg in legs[:atteintes])
+            esperance += frequence * (gagne / total_volume)
+        return esperance
+
+
+@dataclass(frozen=True)
 class PlanWarning:
     """Something worth saying about a plan, and how loudly.
 
