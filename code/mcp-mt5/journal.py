@@ -59,6 +59,55 @@ class Journal:
             raise JournalError(f"journal injoignable ({self.url}) : {exc.reason}") from exc
 
 
+def from_execution(
+    account,
+    sized,
+    execution: dict,
+    magic: int,
+) -> list[dict]:
+    """Les jambes d'un plan qui vient d'être envoyé, prêtes pour le journal.
+
+    Pourquoi ne pas laisser le watcher s'en charger au tour suivant : vingt
+    secondes suffisent à une jambe pour vivre et mourir. Le 09/11, la première
+    cible est tombée avant que la remontée ne soit configurée ; MT5 ne
+    conservant pas le stop d'une position fermée, son R est devenu
+    incalculable. Rien ne reconstitue après coup ce qui n'a jamais été écrit.
+
+    Ici le stop et les cibles sont connus — ce sont ceux qu'on vient de
+    transmettre — donc les écrire tout de suite ferme la fenêtre.
+    """
+    from datetime import datetime, timezone
+
+    maintenant = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    par_index = {leg.index: leg for leg in sized.legs}
+
+    lot = []
+    for envoyee in execution.get("legs", []):
+        leg = par_index.get(envoyee["leg"])
+        if leg is None:
+            continue
+        lot.append(
+            {
+                # Sur un ordre au marché, MT5 donne à la position
+                # l'identifiant de l'ordre qui l'a ouverte : c'est ce qui
+                # permettra au watcher de retrouver cette ligne plus tard.
+                "ticket": str(envoyee["order"]),
+                "symbol": account.to_journal(sized.symbol),
+                "direction": sized.direction,
+                # Horodatage approché ; le watcher le remplacera par celui du
+                # terminal au tour suivant, la valeur transmise l'emportant
+                # sur l'absence comme sur l'ancienne.
+                "open_time": maintenant,
+                "open_price": envoyee.get("price") or sized.reference_price,
+                "stop_loss": sized.stop_loss,
+                "take_profit": leg.take_profit,
+                "lot_size": leg.volume,
+                "plan_id": str(magic),
+            }
+        )
+    return lot
+
+
 def to_trades(
     positions: list[dict],
     history: list[dict],

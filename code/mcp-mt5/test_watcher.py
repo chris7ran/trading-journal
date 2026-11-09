@@ -262,6 +262,74 @@ def test_un_lot_vide_nappelle_pas_le_reseau():
 
     assert Muet().push("1", []) == {"received": 0, "created": 0, "updated": 0}
 
+# --- Enregistrement dès l'envoi -------------------------------------------------
+
+import plan as plan_module
+from test_plan import GOLD
+
+
+class _Compte:
+    alias = "xm-demo"
+    login = "169494134"
+
+    def to_journal(self, nom):
+        return {"GOLD#": "XAUUSD"}.get(nom, nom)
+
+
+def _plan_et_envoi():
+    sized = plan_module.build(
+        spec=GOLD, direction="LONG", stop_loss=4084.30,
+        targets=[4096.30, 4100.30, 4104.30],
+        equity=100_000.0, risk_pct=0.01, market_price=4092.07,
+    )
+    envoi = {"legs": [
+        {"leg": 1, "order": 2368700635, "price": 4092.08},
+        {"leg": 2, "order": 2368700636, "price": 4092.08},
+        {"leg": 3, "order": 2368700638, "price": 4092.08},
+    ]}
+    return sized, envoi
+
+
+def test_le_stop_et_les_cibles_sont_ecrits_des_lenvoi():
+    # Le 09/11, une jambe a vécu et est morte entre deux tours du watcher.
+    # MT5 ne conservant pas le stop d'une position fermée, son R est devenu
+    # incalculable : rien ne reconstitue après coup ce qui n'a jamais été
+    # écrit. Ici le stop est connu, c'est celui qu'on vient de transmettre.
+    sized, envoi = _plan_et_envoi()
+    lot = journal_module.from_execution(_Compte(), sized, envoi, 760430423)
+
+    assert all(t["stop_loss"] == 4084.30 for t in lot)
+    assert [t["take_profit"] for t in lot] == [4096.30, 4100.30, 4104.30]
+    assert {t["plan_id"] for t in lot} == {"760430423"}
+    assert {t["symbol"] for t in lot} == {"XAUUSD"}
+    assert [t["lot_size"] for t in lot] == [0.42, 0.42, 0.44]
+
+
+def test_le_ticket_de_position_est_celui_de_lordre():
+    # Sur un ordre au marché, MT5 donne à la position l'identifiant de l'ordre
+    # qui l'a ouverte. C'est ce qui permet au watcher de retrouver plus tard
+    # la ligne créée ici, et donc de la compléter au lieu de la dupliquer.
+    sized, envoi = _plan_et_envoi()
+    lot = journal_module.from_execution(_Compte(), sized, envoi, 1)
+    assert [t["ticket"] for t in lot] == ["2368700635", "2368700636", "2368700638"]
+
+
+def test_une_jambe_sans_correspondance_est_ignoree():
+    # Si l'envoi s'est arrêté à mi-chemin, seules les jambes réellement
+    # passées sont enregistrées.
+    sized, _ = _plan_et_envoi()
+    partiel = {"legs": [{"leg": 1, "order": 2368700635, "price": 4092.08}]}
+    lot = journal_module.from_execution(_Compte(), sized, partiel, 1)
+    assert len(lot) == 1
+    assert lot[0]["take_profit"] == 4096.30
+
+
+def test_un_prix_de_remplissage_absent_retombe_sur_la_reference():
+    sized, _ = _plan_et_envoi()
+    sans_prix = {"legs": [{"leg": 1, "order": 1, "price": 0.0}]}
+    lot = journal_module.from_execution(_Compte(), sized, sans_prix, 1)
+    assert lot[0]["open_price"] == sized.reference_price
+
 
 if __name__ == "__main__":
     import sys
