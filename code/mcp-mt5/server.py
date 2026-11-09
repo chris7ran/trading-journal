@@ -165,6 +165,8 @@ class Bridge:
     def __init__(self, accounts: list[config.Account]) -> None:
         self._terminals = {a.alias: Terminal(a) for a in accounts if a.enabled}
         self._disabled = [a.alias for a in accounts if not a.enabled]
+        #: Renseigné au démarrage quand la remontée est configurée.
+        self.journal = None
         if not self._terminals:
             raise config.ConfigError("aucun compte activé dans accounts.toml")
 
@@ -705,7 +707,44 @@ async def _send_plan(
     payload["sent"] = True
     payload["execution"] = envoi
     payload["decision"] = "envoyé"
+    payload["journal"] = _enregistrer(terminal, sized, envoi, magic, pending_at)
     return payload
+
+
+def _enregistrer(terminal, sized, envoi: dict, magic: int, pending_at) -> dict | None:
+    """Enregistrer les jambes au journal **au moment de l'envoi**.
+
+    Le watcher le ferait au tour suivant, mais vingt secondes suffisent à une
+    jambe pour vivre et mourir : le 09/11, la première cible est tombée avant
+    que la remontée ne soit configurée, et MT5 ne conservant pas le stop d'une
+    position fermée, son R est devenu incalculable. Rien ne permet de
+    reconstituer après coup ce qui n'a jamais été écrit.
+
+    Ici, en revanche, le stop et les cibles sont connus : ce sont ceux qu'on
+    vient de transmettre. Les écrire tout de suite ferme la fenêtre.
+
+    L'échec n'interrompt rien et ne défait rien : les ordres sont déjà partis,
+    et le watcher rattrapera ce qu'il peut. Un plan exécuté ne doit pas être
+    déclaré en échec parce qu'un journal n'a pas répondu.
+    """
+    client = _JOURNAL[0]
+    if client is None or pending_at:
+        # Un ordre en attente n'a pas encore de position : il n'y a rien à
+        # enregistrer tant qu'il n'est pas rempli.
+        return None
+
+    compte = terminal.account
+    lot = journal.from_execution(compte, sized, envoi, magic)
+    try:
+        return client.push(compte.login, lot)
+    except journal.JournalError as exc:
+        return {"error": str(exc)}
+
+
+#: Référence au client de journal, posée au démarrage. Une liste plutôt qu'une
+#: variable simple pour que `main` puisse la renseigner après la construction
+#: des outils, sans rendre le client obligatoire à l'import.
+_JOURNAL: list = [None]
 
 
 def _with_journal_symbol(terminal: Terminal, payload: dict, key: str = "symbol") -> dict:
@@ -943,6 +982,8 @@ async def _serve(app: Any, bridge: Bridge, args) -> None:
     jeton = os.environ.get("JOURNAL_INGEST_TOKEN", "").strip()
     if url and jeton:
         client = journal.Journal(url, jeton)
+        bridge.journal = client
+        _JOURNAL[0] = client
         print(f"remontée vers le journal : {url}", file=sys.stderr)
     elif url or jeton:
         # Une moitié de configuration est une erreur silencieuse : le watcher
