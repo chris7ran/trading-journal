@@ -259,6 +259,40 @@ Le verdict vaut `accepté`, `à confirmer` ou `refusé`, et liste **tous** les
 motifs : corriger un refus pour tomber sur le suivant n'apprend rien sur
 l'endroit où est vraiment le mur.
 
+## Le watcher
+
+Dès qu'une jambe sort **en gain**, les jambes restantes du même plan voient
+leur stop remonter au prix d'entrée. Rien ne bouge avant, et rien ne bouge si
+la seule sortie a été une perte — le stop a alors fait son travail et il n'y a
+plus rien à protéger.
+
+Il démarre avec le serveur, un par compte qui exécute, et partage les mêmes
+poignées de terminal : le verrou par compte sérialise ses appels avec ceux des
+outils.
+
+**Ce n'est pas un point de défaillance critique.** Les cibles et les stops
+initiaux vivent chez le broker. Si ce processus meurt, les sorties partent
+quand même ; ce qu'on perd est seulement l'amélioration du stop après une
+première sortie. C'est la raison pour laquelle il peut vivre dans le même
+processus que le serveur.
+
+Deux détails qui décident de la différence entre protéger une position et
+élargir son risque sans le voir :
+
+**Un stop n'est jamais reculé.** La comparaison est explicite par sens — sur
+un achat seul un stop plus haut est une amélioration, sur une vente c'est
+l'inverse.
+
+**La cible repart avec le stop.** `TRADE_ACTION_SLTP` remplace les deux d'un
+coup : omettre la cible ne la laisse pas en place, il l'efface. Une remontée
+de stop qui supprimerait la cible transformerait une jambe destinée à sortir
+à 4 104 en position sans sortie.
+
+Le décalage par rapport à l'entrée est réglable. Zéro par défaut, mais zéro
+n'est pas tout à fait le point mort : sur un achat, l'entrée s'est faite à
+l'ask et le stop se déclenche sur le bid, donc sortir à l'entrée exacte coûte
+encore le spread.
+
 ## Tests
 
 Le dimensionnement et les garde-fous ne dépendent ni de MT5 ni du réseau, donc
@@ -267,10 +301,17 @@ ils se testent intégralement :
 ```powershell
 py -3.12 test_plan.py
 py -3.12 test_guards.py
+py -3.12 test_orders.py
+py -3.12 test_watcher.py
 ```
 
-Soixante cas, dont chaque refus. Un garde-fou qu'on ne sait pas déclencher en
+Cent huit cas, dont chaque refus. Un garde-fou qu'on ne sait pas déclencher en
 test est un garde-fou qu'on découvrira cassé le jour où il devait servir.
+
+Les envois se testent avec un faux MT5 : ce qu'il faut vérifier n'est pas que
+le broker réponde, c'est que **la requête formée soit la bonne** — le mode
+d'exécution, le type d'ordre déduit, la présence du stop dès l'entrée,
+l'heure d'expiration.
 
 ## Deux pièges du modèle de données MT5
 

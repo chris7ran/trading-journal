@@ -28,6 +28,7 @@ from typing import Any
 TRADE_ACTION_DEAL = 1
 TRADE_ACTION_PENDING = 5
 TRADE_ACTION_REMOVE = 2
+TRADE_ACTION_SLTP = 6
 
 ORDER_TYPE_BUY = 0
 ORDER_TYPE_SELL = 1
@@ -164,6 +165,32 @@ def pending_leg(
         "type_time": ORDER_TIME_SPECIFIED,
         "expiration": expires_at_server,
         "type_filling": ORDER_FILLING_RETURN,
+    }
+    return _send(mt5, request)
+
+
+def modify_stop(
+    mt5: Any,
+    *,
+    symbol: str,
+    ticket: int,
+    stop_loss: float,
+    take_profit: float,
+) -> dict:
+    """Déplacer le stop d'une position ouverte.
+
+    **La cible doit être transmise aussi.** `TRADE_ACTION_SLTP` remplace les
+    deux valeurs d'un coup : omettre `tp` ne le laisse pas tel quel, il
+    l'efface. Une remontée de stop qui supprimerait la cible transformerait
+    une jambe destinée à sortir à 4 104 en position sans sortie — exactement
+    l'inverse du service rendu.
+    """
+    request = {
+        "action": TRADE_ACTION_SLTP,
+        "symbol": symbol,
+        "position": int(ticket),
+        "sl": float(stop_loss),
+        "tp": float(take_profit),
     }
     return _send(mt5, request)
 
