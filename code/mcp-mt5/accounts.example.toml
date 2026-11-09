@@ -72,6 +72,38 @@ max_open_plans = 1
 r_green = 0.80
 r_red = 0.50
 
+# Exécution. Éteinte par défaut, et tant qu'elle l'est le processus qui pilote
+# ce terminal n'importe même pas le module d'envoi : la capacité n'existe pas,
+# au lieu d'exister et d'être refusée.
+[account.execution]
+enabled = false
+
+# Où vit le journal d'audit. Obligatoire dès que enabled vaut true, et le
+# refus tombe au démarrage et non au premier envoi : pas de trace, pas d'ordre.
+# Une ligne y est écrite au lancement, pour découvrir un disque plein avant
+# qu'un ordre n'en dépende.
+audit_dir = 'F:\audit'
+
+# Durée de vie d'un ordre en attente. Sans péremption, un ordre oublié se
+# déclencherait un jour sur un mouvement sans rapport avec la thèse d'origine.
+expiry_minutes = 30
+
+# Fréquence mesurée de chaque issue, sur ce compte. Facultative, et sans
+# valeur par défaut : si elle manque, la comparaison « entrer maintenant ou
+# déposer un ordre et attendre » ne s'affiche simplement pas. Mieux vaut pas
+# de comparaison qu'une comparaison bâtie sur une distribution supposée, qui
+# aurait exactement l'apparence d'une vraie.
+#
+# Les clés décrivent le nombre de cibles atteintes. Les cinq doivent être
+# présentes et sommer à 1.
+#
+# [account.outcomes]
+# all_targets = 0.492   # les trois cibles
+# two_targets = 0.121
+# one_target  = 0.136
+# breakeven   = 0.023   # première cible manquée, stop pas touché
+# stop        = 0.227
+
 # Deuxième terminal, désactivé par défaut. Dupliquez ce bloc par compte.
 #
 # [[account]]

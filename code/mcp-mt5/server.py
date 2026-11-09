@@ -22,7 +22,9 @@ import asyncio
 import hmac
 import multiprocessing as mp
 import os
+import secrets
 import sys
+import uuid
 from datetime import datetime, timedelta, timezone
 from multiprocessing.connection import Connection
 from pathlib import Path
@@ -104,6 +106,17 @@ class Terminal:
         self._stop()
 
         parent_conn, child_conn = mp.Pipe()
+        # L'exécution n'est transmise que si le compte l'a demandée. Sans ce
+        # dictionnaire, le processus fils n'importe jamais le module d'envoi :
+        # la capacité n'existe pas, au lieu d'exister et d'être refusée.
+        execution = None
+        if self.account.execution_enabled:
+            execution = {
+                "alias": self.account.alias,
+                "audit_dir": str(self.account.audit_dir),
+                "expiry_minutes": self.account.expiry_minutes,
+            }
+
         proc = mp.Process(
             target=worker.run,
             args=(
@@ -111,6 +124,7 @@ class Terminal:
                 str(self.account.terminal),
                 self.account.login,
                 self.account.server,
+                execution,
             ),
             name=f"mt5-{self.account.alias}",
             daemon=True,
@@ -341,154 +355,89 @@ def register_tools(mcp: Any, bridge: Bridge) -> None:
         servent à mesurer ce qu'un retard a coûté ; ils ne changent pas le
         prix d'exécution.
 
-        Le verdict vaut `accepté`, `à confirmer` ou `refusé`, et liste chaque
-        motif plutôt que le premier rencontré.
+        Quand le compte déclare sa distribution d'issues, la réponse porte
+        aussi `wait_instead` : la probabilité minimale de retour du prix
+        au-delà de laquelle déposer un ordre en attente bat entrer maintenant.
         """
-        terminal = bridge.get(account)
-        limits = guards.Limits(
-            risk_pct_max=terminal.account.risk_pct_max,
-            daily_loss_pct_max=terminal.account.daily_loss_pct_max,
-            max_open_plans=terminal.account.max_open_plans,
-        )
-        broker_symbol = terminal.account.to_broker(symbol)
-
-        info = await terminal.call("account")
-        spec_raw = await terminal.call("symbol", symbol=broker_symbol)
-        quote = await terminal.call("quote", symbol=broker_symbol)
-        day = await terminal.call("day_state")
-
-        spec = plan.SymbolSpec(
-            name=spec_raw["name"],
-            digits=spec_raw["digits"],
-            point=spec_raw["point"],
-            tick_size=spec_raw["tick_size"],
-            tick_value=spec_raw["tick_value"],
-            contract_size=spec_raw["contract_size"],
-            volume_min=spec_raw["volume_min"],
-            volume_step=spec_raw["volume_step"],
-            volume_max=spec_raw["volume_max"],
-            stops_level=spec_raw["stops_level"],
+        return await _assess(
+            bridge.get(account), account, symbol, direction, stop_loss, targets,
+            risk_pct=risk_pct, entry=entry, entry_low=entry_low, entry_high=entry_high,
         )
 
-        is_long = str(direction).strip().upper() in ("LONG", "BUY", "ACHAT")
-        market_price = (quote["ask"] if is_long else quote["bid"]) or 0.0
+    @mcp.tool()
+    async def execute_plan(
+        account: str,
+        symbol: str,
+        direction: str,
+        stop_loss: float,
+        targets: list[float],
+        risk_pct: float | None = None,
+        entry: float | None = None,
+        confirm: bool = False,
+    ) -> dict:
+        """Envoyer le plan au marché, une jambe par cible.
 
-        try:
-            sized = plan.build(
-                spec=spec,
-                direction=direction,
-                stop_loss=float(stop_loss),
-                targets=[float(t) for t in targets],
-                equity=info["equity"],
-                risk_pct=risk_pct if risk_pct is not None else limits.risk_pct_max,
-                market_price=market_price,
-                entry=entry,
-                entry_range=(entry_low, entry_high)
-                if entry_low is not None and entry_high is not None
-                else None,
-                thresholds=plan.Thresholds(
-                    green=terminal.account.r_green, red=terminal.account.r_red
-                ),
-            )
-        except plan.PlanError as exc:
-            # A plan that cannot be built is not an internal failure: it is an
-            # answer, and the reason is the useful part.
-            return {
-                "account": account,
-                "decision": "refusé",
-                "reason": str(exc),
-                "quote": quote,
-            }
+        **Tout est recalculé ici**, au prix de l'instant : une
+        prévisualisation d'il y a cinq minutes ne vaut rien sur un marché qui
+        bouge, et exécuter des chiffres périmés serait précisément l'erreur
+        que ce projet existe pour éviter.
 
-        # Only now is the volume known, so only now can the margin be asked
-        # for. This is a terminal-side calculation; it reaches no server.
-        margin = None
-        try:
-            margin = (
-                await terminal.call(
-                    "margin_for",
-                    symbol=broker_symbol,
-                    direction=sized.direction,
-                    volume=sized.total_volume,
-                )
-            )["margin"]
-        except ToolError:
-            pass  # the guard treats an unknown margin as "not checked"
+        Un plan en zone orange est refusé tant que `confirm` n'est pas vrai.
+        Un plan refusé par un garde-fou l'est quoi qu'il arrive : `confirm`
+        lève une hésitation, pas un interdit.
 
-        verdict = guards.check(
-            sized=sized,
-            limits=limits,
-            state=guards.AccountState(
-                equity=info["equity"],
-                balance=info["balance"],
-                currency=info["currency"],
-                margin_free=info["margin_free"],
-                today_realised_pnl=day["realised_pnl"],
-                open_plans=day["open_plans"],
-                open_positions=day["open_positions"],
-                algo_trading_enabled=bool(info.get("algo_trading_enabled", True)),
-                trade_mode=spec_raw["trade_mode"],
-                quoting=bool(quote["quoting"]),
-            ),
-            margin_required=margin,
+        Chaque jambe part avec son stop et sa cible dans la même requête, donc
+        les sorties vivent chez le broker et s'exécutent même si cette machine
+        redémarre.
+        """
+        return await _send_plan(
+            bridge.get(account), account, symbol, direction, stop_loss, targets,
+            risk_pct=risk_pct, entry=entry, confirm=confirm, pending_at=None,
         )
 
-        return {
-            "account": account,
-            "decision": verdict.decision,
-            "findings": [
-                {"level": f.level, "code": f.code, "message": f.message}
-                for f in verdict.findings
-            ],
-            "plan": {
-                "symbol": sized.symbol,
-                "journal_symbol": terminal.account.to_journal(sized.symbol),
-                "direction": sized.direction,
-                "reference_price": sized.reference_price,
-                "stop_loss": sized.stop_loss,
-                "stop_distance": round(sized.stop_distance, spec.digits),
-                "total_volume": sized.total_volume,
-                "risk_amount": sized.risk_amount,
-                "risk_pct": round(sized.risk_pct, 5),
-                "currency": info["currency"],
-                "value_per_point": sized.value_per_point,
-                "blended_r": sized.blended_r,
-                "planned_blended_r": sized.planned_blended_r,
-                "degradation": None
-                if sized.degradation is None
-                else round(sized.degradation, 3),
-                "zone": sized.zone,
-                "legs": [
-                    {
-                        "index": leg.index,
-                        "volume": leg.volume,
-                        "take_profit": leg.take_profit,
-                        "r_multiple": leg.r_multiple,
-                    }
-                    for leg in sized.legs
-                ],
-                "margin_required": margin,
-            },
-            "account_state": {
-                "equity": info["equity"],
-                "balance": info["balance"],
-                "margin_free": info["margin_free"],
-                "realised_today": day["realised_pnl"],
-                "open_plans": day["open_plans"],
-                "open_positions": day["open_positions"],
-                "daily_allowance": round(
-                    (info["balance"] - day["realised_pnl"]) * limits.daily_loss_pct_max,
-                    2,
-                ),
-            },
-            "limits": {
-                "risk_pct_max": limits.risk_pct_max,
-                "daily_loss_pct_max": limits.daily_loss_pct_max,
-                "max_open_plans": limits.max_open_plans,
-                "r_green": terminal.account.r_green,
-                "r_red": terminal.account.r_red,
-            },
-        }
+    @mcp.tool()
+    async def schedule_plan(
+        account: str,
+        symbol: str,
+        direction: str,
+        entry: float,
+        stop_loss: float,
+        targets: list[float],
+        risk_pct: float | None = None,
+        confirm: bool = False,
+    ) -> dict:
+        """Déposer le plan en attente au niveau voulu, et laisser le prix revenir.
+
+        Utile quand le marché s'est éloigné : plutôt qu'entrer à un ratio
+        dégradé ou renoncer, on attend le niveau prévu. Si le prix revient,
+        l'entrée se fait au ratio complet ; sinon rien n'est perdu qu'une
+        occasion.
+
+        Le dimensionnement part de `entry`, et non du prix courant, puisque
+        c'est là que l'ordre se remplira.
+
+        Les ordres **expirent** après le délai configuré pour le compte. Sans
+        péremption, un ordre oublié se déclencherait un jour sur un mouvement
+        sans rapport avec la thèse d'origine.
+
+        Le plan occupe un créneau et réserve son risque **dès la pose**, pas
+        au déclenchement : sinon les garde-fous auraient été vérifiés contre
+        un état périmé au moment où l'ordre se remplit.
+        """
+        return await _send_plan(
+            bridge.get(account), account, symbol, direction, stop_loss, targets,
+            risk_pct=risk_pct, entry=entry, confirm=confirm, pending_at=entry,
+        )
+
+    @mcp.tool()
+    async def cancel_plan(account: str, magic: int) -> dict:
+        """Retirer les ordres en attente d'un plan, par son `magic`.
+
+        Rend le créneau avant l'expiration quand la thèse tombe. N'a aucun
+        effet sur une position déjà ouverte — fermer une position est une
+        autre décision, et ce pont ne sait pas le faire.
+        """
+        return await bridge.get(account).call("cancel", magic=int(magic))
 
     @mcp.tool()
     async def get_clock(account: str) -> dict:
@@ -501,6 +450,260 @@ def register_tools(mcp: Any, bridge: Bridge) -> None:
         mauvaise date. La mesure n'est possible qu'en séance.
         """
         return await bridge.get(account).call("clock")
+
+
+async def _assess(
+    terminal: Terminal,
+    account: str,
+    symbol: str,
+    direction: str,
+    stop_loss: float,
+    targets: list[float],
+    *,
+    risk_pct: float | None = None,
+    entry: float | None = None,
+    entry_low: float | None = None,
+    entry_high: float | None = None,
+    pending_at: float | None = None,
+    _detail: bool = False,
+):
+    """Chiffrer un plan et le soumettre aux garde-fous.
+
+    Partagé par la prévisualisation et les deux chemins d'envoi, pour que ce
+    qui est exécuté soit littéralement ce qui a été jugé. Deux fonctions
+    séparées finiraient par diverger, et c'est l'envoi qui aurait raison.
+    """
+    compte = terminal.account
+    limits = guards.Limits(
+        risk_pct_max=compte.risk_pct_max,
+        daily_loss_pct_max=compte.daily_loss_pct_max,
+        max_open_plans=compte.max_open_plans,
+    )
+    broker_symbol = compte.to_broker(symbol)
+
+    info = await terminal.call("account")
+    spec_raw = await terminal.call("symbol", symbol=broker_symbol)
+    quote = await terminal.call("quote", symbol=broker_symbol)
+    day = await terminal.call("day_state")
+
+    spec = plan.SymbolSpec(
+        name=spec_raw["name"], digits=spec_raw["digits"], point=spec_raw["point"],
+        tick_size=spec_raw["tick_size"], tick_value=spec_raw["tick_value"],
+        contract_size=spec_raw["contract_size"], volume_min=spec_raw["volume_min"],
+        volume_step=spec_raw["volume_step"], volume_max=spec_raw["volume_max"],
+        stops_level=spec_raw["stops_level"],
+    )
+    seuils = plan.Thresholds(green=compte.r_green, red=compte.r_red)
+    is_long = str(direction).strip().upper() in ("LONG", "BUY", "ACHAT")
+    market_price = (quote["ask"] if is_long else quote["bid"]) or 0.0
+
+    # Un ordre en attente se remplira à son niveau, pas au prix courant : il
+    # se dimensionne donc là-bas. Au marché, c'est l'inverse — seul le prix
+    # réel compte.
+    sizing_price = pending_at if pending_at else market_price
+
+    cibles = [float(t) for t in targets]
+    commun = dict(
+        spec=spec, direction=direction, stop_loss=float(stop_loss), targets=cibles,
+        equity=info["equity"],
+        risk_pct=risk_pct if risk_pct is not None else limits.risk_pct_max,
+        thresholds=seuils,
+    )
+    try:
+        sized = plan.build(
+            market_price=sizing_price, entry=entry,
+            entry_range=(entry_low, entry_high)
+            if entry_low is not None and entry_high is not None else None,
+            **commun,
+        )
+    except plan.PlanError as exc:
+        refus = {
+            "account": account, "decision": "refusé",
+            "reason": str(exc), "quote": quote,
+        }
+        return (refus, None, None) if _detail else refus
+
+    margin = None
+    try:
+        margin = (await terminal.call(
+            "margin_for", symbol=broker_symbol,
+            direction=sized.direction, volume=sized.total_volume,
+        ))["margin"]
+    except ToolError:
+        pass
+
+    verdict = guards.check(
+        sized=sized, limits=limits,
+        state=guards.AccountState(
+            equity=info["equity"], balance=info["balance"], currency=info["currency"],
+            margin_free=info["margin_free"], today_realised_pnl=day["realised_pnl"],
+            open_plans=day["open_plans"], open_positions=day["open_positions"],
+            algo_trading_enabled=bool(info.get("algo_trading_enabled", True)),
+            trade_mode=spec_raw["trade_mode"], quoting=bool(quote["quoting"]),
+        ),
+        margin_required=margin,
+    )
+
+    payload = {
+        "account": account,
+        "decision": verdict.decision,
+        "findings": [
+            {"level": f.level, "code": f.code, "message": f.message}
+            for f in verdict.findings
+        ],
+        "plan": {
+            "symbol": sized.symbol,
+            "journal_symbol": compte.to_journal(sized.symbol),
+            "direction": sized.direction,
+            "reference_price": sized.reference_price,
+            "stop_loss": sized.stop_loss,
+            "stop_distance": round(sized.stop_distance, spec.digits),
+            "total_volume": sized.total_volume,
+            "risk_amount": sized.risk_amount,
+            "risk_pct": round(sized.risk_pct, 5),
+            "currency": info["currency"],
+            "value_per_point": sized.value_per_point,
+            "blended_r": sized.blended_r,
+            "planned_blended_r": sized.planned_blended_r,
+            "degradation": None if sized.degradation is None else round(sized.degradation, 3),
+            "zone": sized.zone,
+            "legs": [
+                {"index": l.index, "volume": l.volume,
+                 "take_profit": l.take_profit, "r_multiple": l.r_multiple}
+                for l in sized.legs
+            ],
+            "margin_required": margin,
+        },
+        "account_state": {
+            "equity": info["equity"], "balance": info["balance"],
+            "margin_free": info["margin_free"], "realised_today": day["realised_pnl"],
+            "open_plans": day["open_plans"], "open_positions": day["open_positions"],
+            "pending_orders": day.get("pending_orders", 0),
+            "daily_allowance": round(
+                (info["balance"] - day["realised_pnl"]) * limits.daily_loss_pct_max, 2),
+        },
+        "limits": {
+            "risk_pct_max": limits.risk_pct_max,
+            "daily_loss_pct_max": limits.daily_loss_pct_max,
+            "max_open_plans": limits.max_open_plans,
+            "r_green": compte.r_green, "r_red": compte.r_red,
+        },
+    }
+
+    attente = _wait_instead(compte, sized, commun, entry, pending_at)
+    if attente:
+        payload["wait_instead"] = attente
+
+    return (payload, sized, verdict) if _detail else payload
+
+
+def _wait_instead(compte, sized, commun: dict, entry: float | None, pending_at) -> dict | None:
+    """Entrer maintenant, ou déposer un ordre au niveau prévu ?
+
+    Rend la **probabilité minimale de retour du prix** au-delà de laquelle
+    attendre rapporte davantage. Pas une recommandation : un seuil, que la
+    mesure sur l'historique viendra confronter.
+
+    Ne s'affiche que si le compte déclare sa distribution d'issues et que le
+    plan a trois cibles, puisque la distribution décrit ce gabarit-là. Sans
+    ces conditions, la comparaison serait bâtie sur une distribution supposée
+    — et aurait exactement l'apparence d'une vraie.
+    """
+    if pending_at or entry is None or compte.outcomes is None:
+        return None
+    if len(sized.legs) != 3:
+        return None
+    if abs(entry - sized.reference_price) < 1e-9:
+        return None
+
+    issues = plan.Outcomes(reached=compte.outcomes, stop=compte.outcome_stop or 0.0)
+    try:
+        au_niveau = plan.build(market_price=entry, **commun)
+    except plan.PlanError:
+        return None
+
+    ev_maintenant = issues.expectancy(sized.legs, sized.total_volume)
+    ev_rempli = issues.expectancy(au_niveau.legs, au_niveau.total_volume)
+
+    if ev_maintenant <= 0:
+        seuil = 0.0
+        lecture = "entrer maintenant a une espérance négative : attendre gagne quelle que soit la probabilité de retour"
+    elif ev_rempli <= ev_maintenant:
+        return None
+    else:
+        seuil = ev_maintenant / ev_rempli
+        lecture = f"attendre bat entrer si le prix revient à {entry} avec au moins {seuil:.1%} de chances"
+
+    return {
+        "entry": entry,
+        "expectancy_now_r": round(ev_maintenant, 4),
+        "expectancy_if_filled_r": round(ev_rempli, 4),
+        "breakeven_fill_probability": round(seuil, 4),
+        "reading": lecture,
+    }
+
+
+async def _send_plan(
+    terminal: Terminal,
+    account: str,
+    symbol: str,
+    direction: str,
+    stop_loss: float,
+    targets: list[float],
+    *,
+    risk_pct: float | None,
+    entry: float | None,
+    confirm: bool,
+    pending_at: float | None,
+) -> dict:
+    """Recalculer, juger, puis envoyer — jamais envoyer sur un jugement ancien."""
+    if not terminal.account.execution_enabled:
+        return {
+            "account": account, "decision": "refusé",
+            "reason": "l'exécution n'est pas activée pour ce compte "
+                      "(execution.enabled dans accounts.toml)",
+        }
+
+    payload, sized, verdict = await _assess(
+        terminal, account, symbol, direction, stop_loss, targets,
+        risk_pct=risk_pct, entry=entry, pending_at=pending_at, _detail=True,
+    )
+    if sized is None or verdict is None:
+        return payload
+
+    if verdict.blocked:
+        payload["sent"] = False
+        return payload
+    if verdict.needs_confirmation and not confirm:
+        payload["sent"] = False
+        payload["decision"] = "à confirmer"
+        payload["hint"] = (
+            "relancez avec confirm=true après avoir lu les avertissements ; "
+            "confirm ne lève pas un refus, seulement une hésitation"
+        )
+        return payload
+
+    plan_id = str(uuid.uuid4())
+    # Le magic identifie le plan côté broker. Tiré au hasard sur 31 bits
+    # plutôt que dérivé du plan_id : un UUID n'entre pas dans un entier, et
+    # tronquer un hachage créerait des collisions silencieuses entre plans.
+    magic = secrets.randbelow(2_000_000_000) + 1
+
+    envoi = await terminal.call(
+        "execute",
+        plan_id=plan_id,
+        symbol=sized.symbol,
+        direction=sized.direction,
+        stop_loss=sized.stop_loss,
+        legs=[{"volume": l.volume, "take_profit": l.take_profit} for l in sized.legs],
+        magic=magic,
+        pending_at=pending_at,
+    )
+
+    payload["sent"] = True
+    payload["execution"] = envoi
+    payload["decision"] = "envoyé"
+    return payload
 
 
 def _with_journal_symbol(terminal: Terminal, payload: dict, key: str = "symbol") -> dict:

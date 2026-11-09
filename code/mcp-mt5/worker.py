@@ -54,8 +54,20 @@ class WorkerError(Exception):
 # --- Entry point -------------------------------------------------------------
 
 
-def run(conn: Connection, terminal: str, login: str, server: str) -> None:
-    """Child process main loop. Never returns until the pipe closes."""
+def run(
+    conn: Connection,
+    terminal: str,
+    login: str,
+    server: str,
+    execution: dict | None = None,
+) -> None:
+    """Child process main loop. Never returns until the pipe closes.
+
+    `execution` is `None` for a read-only account, and the module that knows
+    how to send orders is then never imported. The capability does not exist
+    in the process rather than existing and being refused — which is the
+    difference between a door that is locked and a wall.
+    """
     import MetaTrader5 as mt5  # imported in the child only
 
     if not mt5.initialize(path=terminal, portable=True):
@@ -64,6 +76,15 @@ def run(conn: Connection, terminal: str, login: str, server: str) -> None:
         return
 
     state = _State(mt5=mt5, login=login, server=server)
+
+    if execution:
+        try:
+            _enable_execution(state, execution)
+        except Exception as exc:  # noqa: BLE001 - reported, never swallowed
+            conn.send({"ok": False, "error": f"exécution inutilisable : {exc}"})
+            mt5.shutdown()
+            conn.close()
+            return
 
     try:
         # Confirm we landed on the account the configuration promised. A
@@ -108,6 +129,27 @@ class _State:
         #: `None` until a measurement succeeds — see `_server_offset`.
         self.offset: int | None = None
         self.offset_measured_at: float | None = None
+        #: `None` tant que l'exécution n'est pas activée pour ce compte.
+        self.orders: Any = None
+        self.audit: Any = None
+        self.expiry_minutes: int = 30
+
+
+def _enable_execution(state: _State, settings: dict) -> None:
+    """Charger de quoi envoyer, et vérifier le journal d'audit tout de suite.
+
+    L'ordre compte : le journal est ouvert ici, au démarrage, précisément pour
+    qu'un disque plein ou un chemin faux se découvre maintenant et non au
+    moment d'envoyer. `Audit` écrit une ligne à sa construction, donc une
+    réussite ici prouve que le disque accepte des écritures.
+    """
+    import audit
+    import orders
+
+    state.audit = audit.Audit(settings["audit_dir"], settings["alias"])
+    state.orders = orders
+    state.expiry_minutes = int(settings.get("expiry_minutes", 30))
+    _HANDLERS.update(_EXECUTION_HANDLERS)
 
 
 def _dispatch(state: _State, message: dict) -> dict:
@@ -469,17 +511,27 @@ def _day_state(state: _State) -> dict:
     )
 
     positions = mt5.positions_get() or ()
-    # A plan is identified by its magic number. Positions opened by hand carry
-    # zero and count as one group between them — they occupy the account just
-    # the same, so the concurrency ceiling has to see them.
-    plan_magics = {p.magic for p in positions if p.magic}
-    manual = any(p.magic == 0 for p in positions)
+    # Les ordres en attente comptent autant que les positions. Un plan déposé
+    # le matin réserve son créneau dès la pose : ne regarder que les positions
+    # ouvertes le rendrait invisible au plafond de concurrence, et deux plans
+    # pourraient se superposer alors qu'un seul est autorisé. C'est
+    # exactement la réservation immédiate qu'on a choisie plutôt que de
+    # revérifier au déclenchement.
+    pending = mt5.orders_get() or ()
+
+    # Un plan est identifié par son magic. Ce qui est ouvert à la main porte
+    # zéro et compte pour un groupe à part : ça occupe le compte tout pareil.
+    plan_magics = {p.magic for p in positions if p.magic} | {
+        o.magic for o in pending if o.magic
+    }
+    manual = any(p.magic == 0 for p in positions) or any(o.magic == 0 for o in pending)
 
     return {
         "day": now.strftime("%Y-%m-%d"),
         "time_basis": "utc" if _server_offset(state) is not None else "server",
         "realised_pnl": round(realised, 2),
         "open_positions": len(positions),
+        "pending_orders": len(pending),
         "open_plans": len(plan_magics) + (1 if manual else 0),
         "plan_magics": sorted(plan_magics),
         "has_manual_positions": manual,
@@ -525,6 +577,119 @@ def _clock(state: _State) -> dict:
         ),
     }
 
+
+def _execute(
+    state: _State,
+    plan_id: str,
+    symbol: str,
+    direction: str,
+    stop_loss: float,
+    legs: list[dict],
+    magic: int,
+    pending_at: float | None = None,
+) -> dict:
+    """Envoyer les jambes d'un plan, au marché ou en attente.
+
+    Les jambes partent **une par une et séquentiellement**, et l'envoi
+    s'arrête à la première qui échoue. Rien n'est défait automatiquement :
+    chaque jambe déjà passée porte son propre stop, donc elle est protégée, et
+    tenter de la refermer dans la foulée ajouterait un envoi qui peut lui
+    aussi échouer — on remplacerait un plan incomplet par une cascade. Ce qui
+    est garanti, c'est que la réponse dit exactement quelles jambes sont
+    ouvertes et laquelle a été refusée.
+    """
+    if state.orders is None or state.audit is None:
+        raise WorkerError("exécution non activée pour ce compte")
+
+    intention = {
+        "symbol": symbol,
+        "direction": direction,
+        "stop_loss": stop_loss,
+        "legs": legs,
+        "magic": magic,
+        "mode": "pending" if pending_at else "market",
+        "pending_at": pending_at,
+    }
+    # Écrit avant le premier appel au broker. Si la machine meurt ici, le
+    # fichier porte une intention sans résultat, et `orphans()` la retrouve.
+    state.audit.write("order_intent", intention, plan_id=plan_id)
+
+    expiration = None
+    if pending_at:
+        expiration = state.orders.expiry_in_server_time(
+            state.expiry_minutes, _server_offset(state)
+        )
+
+    envoyees: list[dict] = []
+    try:
+        for index, leg in enumerate(legs, start=1):
+            commun = dict(
+                symbol=symbol,
+                direction=direction,
+                volume=float(leg["volume"]),
+                stop_loss=stop_loss,
+                take_profit=float(leg["take_profit"]),
+                magic=magic,
+                comment=f"{plan_id[:16]}#{index}",
+            )
+            if pending_at:
+                resultat = state.orders.pending_leg(
+                    state.mt5, entry=float(pending_at),
+                    expires_at_server=expiration, **commun
+                )
+            else:
+                resultat = state.orders.market_leg(state.mt5, **commun)
+            envoyees.append({"leg": index, **resultat})
+    except Exception as exc:  # noqa: BLE001 - toute erreur doit laisser une trace
+        state.audit.write(
+            "order_failed",
+            {"sent": envoyees, "failed_leg": len(envoyees) + 1, "error": str(exc)},
+            plan_id=plan_id,
+        )
+        raise WorkerError(
+            f"jambe {len(envoyees) + 1} refusée : {exc}. "
+            f"{len(envoyees)} jambe(s) déjà en place, chacune avec son stop."
+        ) from exc
+
+    resultat = {
+        "plan_id": plan_id,
+        "magic": magic,
+        "mode": "pending" if pending_at else "market",
+        "legs": envoyees,
+        "expires_at_server": expiration.isoformat() if expiration else None,
+    }
+    state.audit.write("order_result", resultat, plan_id=plan_id)
+    return resultat
+
+
+def _cancel(state: _State, magic: int) -> dict:
+    """Retirer les ordres en attente d'un plan, par son magic number."""
+    if state.orders is None or state.audit is None:
+        raise WorkerError("exécution non activée pour ce compte")
+
+    mt5 = state.mt5
+    en_attente = [o for o in (mt5.orders_get() or ()) if o.magic == magic]
+    state.audit.write("cancel_intent", {"magic": magic, "tickets": [o.ticket for o in en_attente]})
+
+    retires, echecs = [], []
+    for ordre in en_attente:
+        try:
+            state.orders.cancel_order(mt5, ordre.ticket)
+            retires.append(ordre.ticket)
+        except Exception as exc:  # noqa: BLE001
+            echecs.append({"ticket": ordre.ticket, "error": str(exc)})
+
+    resultat = {"magic": magic, "cancelled": retires, "failed": echecs}
+    state.audit.write("cancel_result", resultat)
+    if echecs and not retires:
+        raise WorkerError(f"aucun ordre retiré : {echecs}")
+    return resultat
+
+
+_EXECUTION_HANDLERS = {
+    "execute": _execute,
+    "cancel": _cancel,
+}
 
 _HANDLERS = {
     "account": _account,

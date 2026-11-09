@@ -33,6 +33,18 @@ DEFAULT_DAILY_LOSS_PCT_MAX = 0.02
 DEFAULT_MAX_OPEN_PLANS = 1
 DEFAULT_R_GREEN = 0.80
 DEFAULT_R_RED = 0.50
+DEFAULT_EXPIRY_MINUTES = 30
+
+#: Les clés de `[account.outcomes]`, et le nombre de cibles atteintes qu'elles
+#: désignent. La distribution décrit le gabarit habituel à trois cibles, donc
+#: la comparaison « entrer ou attendre » ne s'affiche que pour un plan qui en
+#: a exactement trois — sur un autre découpage elle ne voudrait rien dire.
+OUTCOME_KEYS = {
+    "all_targets": 3,
+    "two_targets": 2,
+    "one_target": 1,
+    "breakeven": 0,
+}
 
 
 @dataclass(frozen=True)
@@ -64,6 +76,22 @@ class Account:
     r_green: float = DEFAULT_R_GREEN
     #: R moyen pondéré en dessous duquel on refuse, sans dérogation.
     r_red: float = DEFAULT_R_RED
+
+    # --- Exécution ----------------------------------------------------------
+
+    #: Éteint par défaut. Tant que c'est faux, le processus qui pilote ce
+    #: terminal ne charge même pas le module d'envoi : la capacité n'existe
+    #: pas, au lieu d'exister et d'être refusée.
+    execution_enabled: bool = False
+    #: Où vit le journal d'audit. Sans lui, aucun ordre ne part.
+    audit_dir: Path | None = None
+    #: Durée de vie d'un ordre en attente.
+    expiry_minutes: int = DEFAULT_EXPIRY_MINUTES
+    #: Fréquence mesurée des issues, pour comparer « entrer » à « attendre ».
+    #: Absente par défaut : le pont n'affiche pas de comparaison plutôt que
+    #: d'en afficher une bâtie sur une distribution supposée.
+    outcomes: dict[int, float] | None = None
+    outcome_stop: float | None = None
 
     def to_broker(self, name: str) -> str:
         """Translate a journal symbol into the broker's own spelling.
@@ -190,6 +218,28 @@ def _parse_account(entry: dict, index: int, path: Path) -> Account:
     if not isinstance(max_open_plans, int) or max_open_plans < 1:
         raise ConfigError(f"{where} : 'max_open_plans' doit être un entier ≥ 1")
 
+    execution = entry.get("execution", {})
+    if not isinstance(execution, dict):
+        raise ConfigError(f"{where} : 'execution' doit être une table")
+
+    execution_enabled = bool(execution.get("enabled", False))
+    audit_dir = str(execution.get("audit_dir", "")).strip()
+    expiry_minutes = execution.get("expiry_minutes", DEFAULT_EXPIRY_MINUTES)
+
+    if not isinstance(expiry_minutes, int) or not 1 <= expiry_minutes <= 240:
+        raise ConfigError(
+            f"{where} : 'expiry_minutes' doit être un entier entre 1 et 240"
+        )
+    if execution_enabled and not audit_dir:
+        # Pas de trace, pas d'ordre — et le refus doit tomber au démarrage,
+        # pas au premier envoi.
+        raise ConfigError(
+            f"{where} : l'exécution est activée sans 'audit_dir'. Aucun ordre ne "
+            f"peut partir sans journal d'audit."
+        )
+
+    outcomes, outcome_stop = _parse_outcomes(entry.get("outcomes"), where)
+
     return Account(
         alias=alias,
         login=login,
@@ -203,7 +253,56 @@ def _parse_account(entry: dict, index: int, path: Path) -> Account:
         max_open_plans=max_open_plans,
         r_green=r_green,
         r_red=r_red,
+        execution_enabled=execution_enabled,
+        audit_dir=Path(audit_dir) if audit_dir else None,
+        expiry_minutes=expiry_minutes,
+        outcomes=outcomes,
+        outcome_stop=outcome_stop,
     )
+
+
+def _parse_outcomes(
+    table: object, where: str
+) -> tuple[dict[int, float] | None, float | None]:
+    """Lire la distribution d'issues, ou renvoyer rien du tout.
+
+    Absente, elle ne vaut pas zéro : elle vaut « inconnue », et la comparaison
+    qui en dépend ne s'affiche simplement pas. Une distribution partielle est
+    en revanche refusée — des fréquences qui ne somment pas à 1 produiraient
+    une espérance fausse avec exactement l'apparence d'une vraie.
+    """
+    if table is None:
+        return None, None
+    if not isinstance(table, dict):
+        raise ConfigError(f"{where} : 'outcomes' doit être une table")
+
+    attendues = set(OUTCOME_KEYS) | {"stop"}
+    fournies = set(table)
+    if fournies != attendues:
+        manquantes = attendues - fournies
+        en_trop = fournies - attendues
+        detail = []
+        if manquantes:
+            detail.append(f"manquant : {', '.join(sorted(manquantes))}")
+        if en_trop:
+            detail.append(f"inconnu : {', '.join(sorted(en_trop))}")
+        raise ConfigError(f"{where} : 'outcomes' incomplet — {' ; '.join(detail)}")
+
+    valeurs = {}
+    for cle, valeur in table.items():
+        if not isinstance(valeur, (int, float)) or isinstance(valeur, bool) or valeur < 0:
+            raise ConfigError(f"{where} : outcomes.{cle} doit être une fréquence ≥ 0")
+        valeurs[cle] = float(valeur)
+
+    total = sum(valeurs.values())
+    if abs(total - 1.0) > 0.01:
+        raise ConfigError(
+            f"{where} : les fréquences de 'outcomes' somment à {total:.3f} "
+            f"au lieu de 1"
+        )
+
+    reached = {n: valeurs[cle] for cle, n in OUTCOME_KEYS.items()}
+    return reached, valeurs["stop"]
 
 
 def _fraction(table: dict, key: str, default: float, where: str) -> float:
