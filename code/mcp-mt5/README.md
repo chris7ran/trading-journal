@@ -1,13 +1,33 @@
-# Pont MCP MetaTrader 5 — lecture seule
+# Pont MCP MetaTrader 5
 
 Expose un ou plusieurs terminaux MetaTrader 5 comme un serveur MCP, pour
 consulter comptes, positions, historique et spécifications d'instruments
 depuis un assistant.
 
-**Ce serveur ne trade pas.** Les neuf outils lisent, aucun n'envoie d'ordre.
-L'exécution viendra dans un module séparé, pour qu'elle reste une addition
-visible et relisible plutôt qu'une ligne noyée dans un fichier qui savait déjà
-passer des ordres.
+**L'exécution est éteinte par défaut, compte par compte.** Tant que
+`execution.enabled` est faux, le processus qui pilote ce terminal n'importe
+même pas le module d'envoi : la capacité n'existe pas, au lieu d'exister et
+d'être refusée. C'est la différence entre une porte fermée à clé et un mur.
+
+Les appels MT5 qui écrivent vivent tous dans `orders.py`, et nulle part
+ailleurs — chercher `order_send` dans les sources ne doit ramener que ce
+fichier et ses tests.
+
+## Pas de trace, pas d'ordre
+
+Si l'écriture du journal d'audit échoue, l'envoi n'a pas lieu. C'est ce qui
+sépare un audit d'un fichier de logs : un log perdu fait un trou dans
+l'histoire, un audit perdu fait un ordre dont personne ne peut dire d'où il
+vient.
+
+Deux écritures par envoi — l'intention avant l'appel au broker, le résultat
+après. Une **intention sans résultat** est le signal le plus précieux du
+fichier : elle dit qu'un ordre est parti sans qu'on sache ce qu'il est devenu.
+`Audit.orphans()` les retrouve, et c'est la première question à poser après un
+incident.
+
+Le journal écrit aussi une ligne au démarrage, pour découvrir qu'un disque est
+plein ou qu'un chemin est faux avant qu'un ordre n'en dépende.
 
 ## Pourquoi un processus par terminal
 
@@ -120,8 +140,47 @@ sur la même VM Windows.
 | `list_market_watch` | Symboles présents dans le Market Watch |
 | `get_clock` | Décalage entre l'horloge du broker et l'UTC réel |
 | `preview_plan` | Chiffre un plan de trade et le passe aux garde-fous, **sans rien envoyer** |
+| `execute_plan` | Envoie le plan au marché, une jambe par cible |
+| `schedule_plan` | Dépose le plan en attente au niveau voulu, avec expiration |
+| `cancel_plan` | Retire les ordres en attente d'un plan, par son `magic` |
 
-Tous prennent un `account` : l'alias défini dans `accounts.toml`.
+Tous prennent un `account` : l'alias défini dans `accounts.toml`. Les trois
+derniers ne répondent que si le compte a activé l'exécution.
+
+## Envoyer
+
+**Tout est recalculé au moment de l'envoi.** Une prévisualisation d'il y a
+cinq minutes ne vaut rien sur un marché qui bouge — ce matin, l'or a fait
+passer le même plan de 0,92 à 0,73 R en dix minutes. `execute_plan` refait
+donc le dimensionnement, les garde-fous et le verdict, et exécute ce qu'il
+vient de juger plutôt qu'un chiffrage reçu en argument.
+
+Un plan en zone orange exige `confirm=true`. Un plan refusé par un garde-fou
+l'est quoi qu'il arrive : **`confirm` lève une hésitation, pas un interdit.**
+
+### Échec à mi-chemin
+
+Les jambes partent une par une, et l'envoi s'arrête à la première refusée.
+Rien n'est défait automatiquement : chaque jambe déjà passée porte son propre
+stop, donc elle est protégée, et tenter de la refermer dans la foulée
+ajouterait un envoi qui peut lui aussi échouer — on remplacerait un plan
+incomplet par une cascade. Ce qui est garanti, c'est que la réponse dit
+exactement quelles jambes sont ouvertes et laquelle a été refusée.
+
+### Attendre plutôt qu'entrer dégradé
+
+`schedule_plan` dépose les jambes au niveau prévu et laisse le prix revenir.
+Le dimensionnement part de ce niveau, puisque c'est là que l'ordre se
+remplira.
+
+Le plan **occupe un créneau et réserve son risque dès la pose**, pas au
+déclenchement. Sinon un ordre posé le matin, rempli l'après-midi après deux
+pertes, aurait été validé contre un état périmé.
+
+Quand le compte déclare sa distribution d'issues, `preview_plan` ajoute
+`wait_instead` : la probabilité minimale de retour du prix au-delà de laquelle
+attendre rapporte davantage qu'entrer maintenant. Un seuil, pas une
+recommandation — la mesure sur l'historique vient le confronter.
 
 ## Chiffrer un plan
 

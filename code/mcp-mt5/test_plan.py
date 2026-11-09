@@ -398,6 +398,59 @@ def test_une_derive_qui_compte_vraiment_se_voit_dans_la_zone():
     assert all(w.level == "info" for w in p.warnings)
     assert p.zone == "amber"
 
+# --- Espérance -----------------------------------------------------------------
+
+# Distribution relevée sur les 132 trades XAUUSD du journal, novembre 2026.
+SCALE_FX = plan.Outcomes(
+    reached={3: 0.492, 2: 0.121, 1: 0.136, 0: 0.023},
+    stop=0.227,
+)
+
+
+def gabarit_or():
+    """Le gabarit Scale FX sur l'or : stop 80 pips, cibles 40 / 80 / 120."""
+    return plan.build(
+        spec=GOLD, direction="LONG", stop_loss=4102.00,
+        targets=[4114.00, 4118.00, 4122.00],
+        equity=100_000.0, risk_pct=0.01, market_price=4110.00,
+    )
+
+
+def test_lesperance_reproduit_le_calcul_fait_sur_les_donnees():
+    # Calcul indépendant sur les 132 trades : +0,3485 R par trade. L'écart
+    # vient de l'arrondi des jambes, 0,41 / 0,41 / 0,42 au lieu de tiers
+    # exacts.
+    p = gabarit_or()
+    assert [leg.r_multiple for leg in p.legs] == [0.5, 1.0, 1.5]
+    assert abs(SCALE_FX.expectancy(p.legs, p.total_volume) - 0.3485) < 0.005
+
+
+def test_un_stop_coute_toujours_un_r_quelle_que_soit_sa_distance():
+    # Le volume est dimensionné pour risquer le montant voulu, donc la perte
+    # est constante en argent. Un gabarit plus large ne perd pas davantage.
+    serre = plan.build(spec=GOLD, direction="LONG", stop_loss=4108.00,
+                       targets=[4112.00, 4114.00, 4116.00],
+                       equity=100_000.0, risk_pct=0.01, market_price=4110.00)
+    perdant = plan.Outcomes(reached={3: 0, 2: 0, 1: 0, 0: 0}, stop=1.0)
+    assert perdant.expectancy(serre.legs, serre.total_volume) == -1.0
+    assert perdant.expectancy(gabarit_or().legs, gabarit_or().total_volume) == -1.0
+
+
+def test_lesperance_tombe_avec_le_retard():
+    # C'est ce que mesure la comparaison « entrer ou attendre ».
+    a_lheure = gabarit_or()
+    tardif = plan.build(spec=GOLD, direction="LONG", stop_loss=4102.00,
+                        targets=[4114.00, 4118.00, 4122.00],
+                        equity=100_000.0, risk_pct=0.01, market_price=4111.00)
+    assert (SCALE_FX.expectancy(tardif.legs, tardif.total_volume)
+            < SCALE_FX.expectancy(a_lheure.legs, a_lheure.total_volume))
+
+
+def test_une_distribution_vide_ne_rend_pas_zero_par_accident():
+    # Un volume nul doit rendre 0 sans diviser par zéro.
+    assert SCALE_FX.expectancy([], 0.0) == 0.0
+
+
 if __name__ == "__main__":
     import sys
     import traceback
