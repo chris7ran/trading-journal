@@ -76,6 +76,23 @@ class Client:
         self.post({"jsonrpc": "2.0", "method": "notifications/initialized"})
 
 
+def _coerce(value: str):
+    """Rendre un argument de ligne de commande dans son type JSON.
+
+    Tout passer en texte suffisait tant que les outils ne prenaient que des
+    chaînes. `preview_plan` attend une liste de nombres pour ses cibles, et
+    `"[4000, 4010]"` n'en est pas une : le serveur valide les arguments contre
+    le schéma et refuserait.
+
+    Ce qui ne ressemble pas à du JSON reste du texte, pour qu'un alias comme
+    `xm-demo` ne devienne pas autre chose en chemin.
+    """
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return value
+
+
 def _decode(body: str) -> dict | None:
     """Parse a reply that may be bare JSON or a single SSE event."""
     body = body.strip()
@@ -115,7 +132,7 @@ def main() -> int:
             print(f"paramètre mal formé : '{item}' (attendu clé=valeur)", file=sys.stderr)
             return 2
         key, value = item.split("=", 1)
-        arguments[key] = value
+        arguments[key] = _coerce(value)
 
     reply = client.post({
         "jsonrpc": "2.0",
