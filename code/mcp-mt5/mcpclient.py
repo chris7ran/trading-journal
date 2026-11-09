@@ -95,7 +95,18 @@ class Client:
         self._id += 1
         return self._id
 
-    def _post(self, payload: dict) -> dict | None:
+    def _post(self, payload: dict, _reessai: bool = True) -> dict | None:
+        """Envoyer, et refaire la poignée de main si la session a expiré.
+
+        Le serveur ferme une session restée inactive, et répond alors 404 au
+        prochain appel. Sans reconnexion, un client qui vit des heures entre
+        deux usages — un bot qui attend un signal — reste cassé jusqu'à ce
+        qu'on le relance, et il échoue au moment précis où on avait besoin de
+        lui.
+
+        La reprise est silencieuse et n'a lieu qu'une fois : une session
+        refusée deux fois de suite n'est plus un problème de session.
+        """
         requete = urllib.request.Request(
             self.url, data=json.dumps(payload).encode(), method="POST"
         )
@@ -117,6 +128,15 @@ class Client:
                 return _decode(reponse.read().decode("utf-8", "replace"))
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace")[:300]
+            session_expiree = (
+                exc.code in (400, 404)
+                and self.session is not None
+                and payload.get("method") != "initialize"
+            )
+            if session_expiree and _reessai:
+                self.session = None
+                self.connect()
+                return self._post(payload, _reessai=False)
             raise McpError(f"HTTP {exc.code} : {detail or exc.reason}") from exc
         except urllib.error.URLError as exc:
             raise McpError(f"serveur injoignable sur {self.url} : {exc.reason}") from exc

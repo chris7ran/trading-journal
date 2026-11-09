@@ -76,17 +76,33 @@ class Bot:
 
     def run(self) -> None:
         print(f"bot à l'écoute, compte {self.compte}", flush=True)
+        attente = 1
         while True:
             try:
                 for update in self._updates():
                     self._traiter(update)
+                attente = 1
             except KeyboardInterrupt:
                 return
             except Exception as exc:  # noqa: BLE001
                 # Un bot qui meurt sur un accroc réseau est pire qu'absent :
                 # on le croit en train d'écouter.
-                print(f"[bot] {type(exc).__name__}: {exc}", flush=True)
-                time.sleep(5)
+                message = str(exc)
+                if "409" in message:
+                    # Telegram ne sert qu'un seul interrogateur par bot.
+                    print(
+                        "[bot] une autre instance interroge déjà ce bot. "
+                        "Fermez-la : à deux, chacune vole les messages de "
+                        "l'autre et Telegram finit par limiter les deux.",
+                        flush=True,
+                    )
+                else:
+                    print(f"[bot] {type(exc).__name__}: {message}", flush=True)
+                # Attente croissante : réessayer toutes les secondes après un
+                # « too many requests » ne fait que confirmer à Telegram qu'on
+                # en demande trop.
+                time.sleep(attente)
+                attente = min(attente * 2, 60)
 
     def _updates(self) -> list[dict]:
         reponse = self._api(
