@@ -25,10 +25,25 @@ from datetime import datetime, timedelta, timezone
 from multiprocessing.connection import Connection
 from typing import Any
 
-#: Broker server clocks sit at whole- or half-hour offsets from UTC. Rounding
-#: a measurement to this grid absorbs the few seconds of latency between
-#: asking the terminal for the time and reading our own clock.
-OFFSET_GRID_SECONDS = 900
+#: Grille d'arrondi de la mesure d'horloge : l'heure pleine.
+#:
+#: Le choix n'est pas cosmétique, il corrige une erreur. La mesure vaut
+#: `décalage − ancienneté de la bougie`, donc un symbole qui ne cote pas tire
+#: le résultat vers le bas. Arrondir au quart d'heure conservait fidèlement
+#: cette erreur : une bougie vieille de trente minutes sur un serveur à UTC+2
+#: donnait 5 400, soit UTC+1,5 — un décalage qui n'existe chez aucun broker,
+#: et que rien ne signalait.
+#:
+#: À l'heure pleine, 5 400 remonte à 7 200 : l'arrondi rattrape jusqu'à une
+#: demi-heure d'ancienneté, ce qui couvre largement le cas d'un indice avant
+#: son ouverture pendant que l'or cote.
+#:
+#: Hypothèse assumée : le serveur du broker est à un nombre entier d'heures
+#: d'UTC. C'est le cas de tous les brokers européens, XM compris. Un serveur
+#: calé sur une demi-heure — l'Inde, par exemple — serait mal mesuré, et il
+#: faudrait alors revenir à une grille plus fine *et* garantir la fraîcheur
+#: autrement.
+OFFSET_GRID_SECONDS = 3600
 
 #: A measured offset outside this band is not an offset, it is a stale quote —
 #: typically the Friday close read on a Sunday. No broker runs its server more
@@ -112,6 +127,12 @@ def run(
                 message = conn.recv()
             except EOFError:
                 return
+            except KeyboardInterrupt:
+                # Ctrl+C sur le parent interrompt l'attente ici. C'est un
+                # arrêt voulu, pas une panne : sortir en silence vaut mieux
+                # qu'une trace d'exception qui donnerait à croire le
+                # contraire.
+                return
             conn.send(_dispatch(state, message))
     finally:
         mt5.shutdown()
@@ -189,34 +210,59 @@ def _server_offset(state: _State) -> int | None:
         if time.time() - state.offset_measured_at < 60:
             return state.offset
 
+    # Tous les candidats sont interrogés, et c'est **le plus grand écart** qui
+    # gagne — pas le premier qui répond.
+    #
+    # L'écart mesuré vaut `décalage − ancienneté de la bougie`. Un symbole qui
+    # ne cote pas encore rend sa dernière bougie connue, vieille de plusieurs
+    # heures, et donne donc un écart trop petit. S'arrêter au premier qui
+    # répond revenait à faire confiance à n'importe quel symbole, y compris un
+    # indice avant son ouverture : le 09/11 à 8 h 52 à Paris, le GER40 a rendu
+    # une bougie de la veille et la mesure est sortie à UTC+1,5 au lieu de
+    # UTC+2. Le maximum est l'échantillon le moins périmé, et il suffit qu'un
+    # seul symbole cote pour qu'il soit juste.
     mt5 = state.mt5
+    meilleur = None
     for symbol in _candidate_symbols(state):
         rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 0, 1)
         if rates is None or len(rates) == 0:
             continue
         difference = int(rates[0]["time"]) - int(time.time())
         if abs(difference) > MAX_PLAUSIBLE_OFFSET_SECONDS:
-            continue  # stale bar, not an offset
-        rounded = round(difference / OFFSET_GRID_SECONDS) * OFFSET_GRID_SECONDS
-        state.offset = int(rounded)
-        state.offset_measured_at = time.time()
+            continue  # bougie trop vieille pour être un décalage
+        if meilleur is None or difference > meilleur:
+            meilleur = difference
+
+    if meilleur is None:
         return state.offset
 
+    state.offset = int(round(meilleur / OFFSET_GRID_SECONDS) * OFFSET_GRID_SECONDS)
+    state.offset_measured_at = time.time()
     return state.offset
 
 
-def _candidate_symbols(state: _State) -> list[str]:
-    """Symbols to measure the clock against, most liquid first.
+#: Plafond du nombre de symboles interrogés pour la mesure d'horloge. Assez
+#: large pour qu'au moins un cote à toute heure — l'or et le forex tournent
+#: quand les indices dorment — sans interroger tout le Market Watch à chaque
+#: minute.
+MAX_CLOCK_SYMBOLS = 12
 
-    Anything in Market Watch will do; the ones already selected are tried
-    first because they are the instruments actually being traded, so they are
-    the ones quoting when it matters.
+
+def _candidate_symbols(state: _State) -> list[str]:
+    """Symboles sur lesquels mesurer l'horloge.
+
+    Tout ce qui est dans le Market Watch convient, et il en faut plusieurs :
+    un seul suffirait si l'on pouvait garantir qu'il cote, or aucun ne cote
+    vingt-quatre heures sur vingt-quatre. Les indices dorment la nuit, le
+    forex ferme le week-end, l'or s'arrête une heure par jour. C'est la
+    diversité de l'échantillon qui rend la mesure robuste, pas le choix d'un
+    symbole privilégié.
     """
     symbols = state.mt5.symbols_get()
     if not symbols:
         return []
     selected = [s.name for s in symbols if s.visible]
-    return selected[:5] or [symbols[0].name]
+    return selected[:MAX_CLOCK_SYMBOLS] or [symbols[0].name]
 
 
 def _to_utc(state: _State, mt5_epoch: int | float | None) -> str | None:
@@ -564,16 +610,43 @@ def _margin_for(state: _State, symbol: str, direction: str, volume: float) -> di
 
 
 def _clock(state: _State) -> dict:
+    """Décalage d'horloge, et l'échantillon qui l'a produit.
+
+    Les mesures par symbole sont rendues parce qu'elles sont le seul moyen de
+    voir qu'une d'elles est périmée. Sans ça, un chiffre faux ressemble
+    exactement à un chiffre juste — c'est ce qui s'est passé le 09/11, où le
+    GER40 avant son ouverture a tiré la mesure à UTC+1,5.
+    """
     offset = _server_offset(state)
+    mt5 = state.mt5
+    maintenant = int(time.time())
+
+    echantillon = []
+    for symbol in _candidate_symbols(state):
+        rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 0, 1)
+        if rates is None or len(rates) == 0:
+            continue
+        ecart = int(rates[0]["time"]) - maintenant
+        echantillon.append({
+            "symbol": symbol,
+            "offset_seconds": ecart,
+            # L'ancienneté se déduit une fois le décalage retenu : c'est
+            # l'écart entre ce que ce symbole dit et ce que dit le plus frais.
+            "stale_seconds": None if offset is None else offset - ecart,
+        })
+
     return {
         "utc_now": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"),
         "server_utc_offset_seconds": offset,
         "server_utc_offset_hours": None if offset is None else offset / 3600,
         "measured": offset is not None,
+        "samples": sorted(echantillon, key=lambda s: -s["offset_seconds"]),
         "note": (
-            "mesuré sur l'ouverture de la bougie M1 en cours"
+            "retenu : l'écart le plus grand de l'échantillon, donc le symbole "
+            "le moins périmé"
             if offset is not None
-            else "marché fermé et aucune mesure en cache : les horodatages sont en heure serveur"
+            else "aucun symbole ne cote et aucune mesure en cache : les "
+                 "horodatages sont en heure serveur"
         ),
     }
 
