@@ -192,6 +192,76 @@ def test_le_scenario_du_plan_a_trois_jambes():
     etat = group_by_plan(apres, histoire)[760430423]
     assert breakeven_moves(etat) == []
 
+# --- Remontée vers le journal ---------------------------------------------------
+
+import journal as journal_module
+
+
+def vers_journal(nom: str) -> str:
+    return {"GOLD#": "XAUUSD", "GER40Cash#": "GER40"}.get(nom, nom)
+
+
+def test_le_symbole_pousse_est_celui_du_journal():
+    # GOLD# chez XM, XAUUSD partout ailleurs. Pousser le nom du broker
+    # couperait l'or en deux séries selon le terminal qui l'a produit.
+    lot = journal_module.to_trades(positions_brutes(), [], vers_journal)
+    assert {t["symbol"] for t in lot} == {"XAUUSD"}
+
+
+def test_lidentifiant_de_plan_est_le_magic():
+    # Une position MT5 ne porte que 31 caractères de commentaire : l'UUID n'y
+    # tient pas. Le magic, lui, est sur chaque position et chaque deal.
+    lot = journal_module.to_trades(positions_brutes(), [], vers_journal)
+    assert {t["plan_id"] for t in lot} == {"760430423"}
+
+
+def test_ce_qui_na_pas_de_magic_nest_pas_remonte():
+    # Le pont ne remonte que les plans qu'il a posés.
+    assert journal_module.to_trades(positions_brutes(magic=0), [], vers_journal) == []
+    histoire = [{"magic": 0, "closed": True, "ticket": "9", "symbol": "GOLD#",
+                 "direction": "LONG", "profit": 10.0}]
+    assert journal_module.to_trades([], histoire, vers_journal) == []
+
+
+def test_une_position_ouverte_porte_son_stop_et_sa_cible():
+    lot = journal_module.to_trades(positions_brutes(), [], vers_journal)
+    assert lot[0]["stop_loss"] == 4084.3
+    assert lot[0]["take_profit"] == 4096.3
+    assert "close_time" not in lot[0]
+
+
+def test_un_trade_cloture_na_plus_de_stop_et_ce_nest_pas_grave():
+    # MT5 ne conserve pas le stop d'une position fermée. L'upsert du backend
+    # ne remplace jamais une valeur connue par une absence, donc le stop
+    # enregistré pendant que la position vivait survit à sa clôture.
+    histoire = [{
+        "ticket": "1", "symbol": "GOLD#", "direction": "LONG", "volume": 0.42,
+        "open_time": "2026-11-09T08:05:50", "close_time": "2026-11-09T09:12:00",
+        "open_price": 4092.08, "close_price": 4096.30, "profit": 177.24,
+        "commission": -2.0, "swap": 0.0, "magic": 760430423, "closed": True,
+    }]
+    lot = journal_module.to_trades([], histoire, vers_journal)
+    assert len(lot) == 1
+    assert "stop_loss" not in lot[0]
+    assert lot[0]["close_price"] == 4096.30
+    assert lot[0]["commission"] == -2.0
+
+
+def test_ouvertes_et_cloturees_partent_dans_le_meme_lot():
+    histoire = [{"ticket": "1", "symbol": "GOLD#", "direction": "LONG",
+                 "volume": 0.42, "profit": 177.24, "magic": 760430423,
+                 "closed": True}]
+    lot = journal_module.to_trades(positions_brutes(), histoire, vers_journal)
+    assert [t["ticket"] for t in lot] == ["1", "2", "1"]
+
+
+def test_un_lot_vide_nappelle_pas_le_reseau():
+    class Muet(journal_module.Journal):
+        def __init__(self):
+            super().__init__("http://inexistant", "x")
+
+    assert Muet().push("1", []) == {"received": 0, "created": 0, "updated": 0}
+
 
 if __name__ == "__main__":
     import sys

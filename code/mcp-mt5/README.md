@@ -293,6 +293,44 @@ n'est pas tout à fait le point mort : sur un achat, l'entrée s'est faite à
 l'ask et le stop se déclenche sur le bid, donc sortir à l'entrée exacte coûte
 encore le spread.
 
+## Remontée vers le journal
+
+Le watcher pousse l'état des plans vers `POST /ingest/trades` à chaque tour.
+Facultatif, et configuré par l'environnement parce que l'adresse révèle le
+tailnet et que le jeton ouvre une écriture :
+
+```powershell
+$env:JOURNAL_URL = "https://mon-backend.mon-tailnet.ts.net:8443"
+$env:JOURNAL_INGEST_TOKEN = "<INGEST_TOKEN du backend>"
+```
+
+Les deux vont ensemble : une moitié de configuration désactive la remontée et
+le dit, plutôt que de laisser croire qu'elle a lieu.
+
+**Rien n'est gardé en mémoire.** Chaque tour reconstruit le lot complet et le
+backend fait un upsert sur le ticket. Un journal injoignable pendant dix
+minutes se rattrape tout seul au tour suivant, et un redémarrage ne laisse
+aucun trou — c'est ce qui autorise le watcher à ne tenir aucun registre.
+
+Trois choix de conversion méritent d'être connus.
+
+**Le symbole poussé est celui du journal.** `GOLD#` chez XM devient `XAUUSD`.
+Pousser le nom du broker couperait l'or en deux instruments distincts selon le
+terminal qui l'a produit.
+
+**L'identifiant de plan est le magic**, pas l'UUID : une position MT5 ne porte
+que 31 caractères de commentaire. L'UUID complet reste dans le journal d'audit
+pour faire le lien le jour où l'on enquête.
+
+**Un trade clôturé n'a plus de stop**, MT5 ne le conserve pas. Sans
+conséquence : l'upsert du backend ne remplace jamais une valeur connue par une
+absence, donc le stop enregistré pendant que la position vivait survit à sa
+clôture et le R reste calculable après coup.
+
+Le compte du journal doit déclarer son login MT5 — la colonne `mt5_login` —
+sans quoi `/ingest/trades` refuse le lot. C'est volontaire : un compte qui ne
+déclare aucun terminal est inatteignable par ce chemin.
+
 ## Tests
 
 Le dimensionnement et les garde-fous ne dépendent ni de MT5 ni du réseau, donc
@@ -305,7 +343,7 @@ py -3.12 test_orders.py
 py -3.12 test_watcher.py
 ```
 
-Cent huit cas, dont chaque refus. Un garde-fou qu'on ne sait pas déclencher en
+Cent quinze cas, dont chaque refus. Un garde-fou qu'on ne sait pas déclencher en
 test est un garde-fou qu'on découvrira cassé le jour où il devait servir.
 
 Les envois se testent avec un faux MT5 : ce qu'il faut vérifier n'est pas que
