@@ -42,6 +42,7 @@ GER40 = "GER40Cash#"
 US30 = "US30Cash#"
 NAS100 = "US100Cash#"
 XAUUSD = "GOLD#"
+BTCUSD = "BTCUSD#"
 
 # Garde-fous propres au pont. Ils s'appliquent toujours, y compris aux comptes
 # sans prop firm derrière : une démo de broker n'a aucune règle et doit rester
