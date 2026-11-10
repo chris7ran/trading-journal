@@ -80,7 +80,7 @@ class Bot:
         while True:
             try:
                 for update in self._updates():
-                    self._traiter(update)
+                    self._sans_silence(update)
                 attente = 1
             except KeyboardInterrupt:
                 return
@@ -115,6 +115,29 @@ class Bot:
         return updates
 
     # --- Traitement ---------------------------------------------------------
+
+    def _sans_silence(self, update: dict) -> None:
+        """Traiter un message en garantissant qu'une réponse part toujours.
+
+        Le traitement n'attrapait que les erreurs du pont. Toute autre —
+        une clé absente dans une réponse, un champ au mauvais type — remontait
+        à la boucle, était consignée dans le terminal, et l'expéditeur
+        n'apprenait rien.
+
+        Un outil de trading qui ne répond pas est pire qu'un outil qui refuse.
+        On reste devant son téléphone à se demander si l'ordre est parti.
+        """
+        try:
+            self._traiter(update)
+        except Exception as exc:  # noqa: BLE001
+            chat = (
+                ((update.get("message") or {}).get("chat") or {}).get("id")
+                or (((update.get("callback_query") or {}).get("message") or {})
+                    .get("chat") or {}).get("id")
+            )
+            print(f"[bot] {type(exc).__name__}: {exc}", flush=True)
+            if chat:
+                self._envoyer(chat, f"Erreur interne : {type(exc).__name__} — {exc}")
 
     def _traiter(self, update: dict) -> None:
         if "callback_query" in update:

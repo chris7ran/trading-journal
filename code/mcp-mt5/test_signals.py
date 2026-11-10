@@ -247,6 +247,71 @@ def test_le_mot_or_ne_declenche_pas_un_faux_instrument():
     s = parse("SELL NASDAQ\nPE : 26850\nSL : 26960\nTP1 : 26750\nor donc")
     assert s.symbol == "NAS100"
 
+# --- Deux formats de plus, trouvés à l'usage ------------------------------------
+
+GOLD_NUMEROTE = """📈 BUY GOLD – XAUUSD
+🟢 Entrée : 4116.50
+🛑 SL : 4101.50
+🎯 TP1 : 4126.50
+🎯 TP2 : 4136.50
+🎯 TP3 : 4146.50
+⚠️ Risque maximum : 1 % du capital
+☑️ À TP1 : Half Close + Break Even (BE)"""
+
+BTC_GROUPE = """📉️ SELL BTCUSD
+
+👉️ PE 74400-500
+🛑️ SL 74600
+
+✅ TP 74170 / 73500 / 73000
+
+⚠️ Money Management
+Risque maximum : 1 % du capital."""
+
+
+def test_le_symbole_ecrit_deux_fois_ne_gene_pas():
+    # « BUY GOLD – XAUUSD » nomme l'or de deux façons sur la même ligne.
+    s = parse(GOLD_NUMEROTE)
+    assert s.symbol == "XAUUSD"
+    assert s.direction == LONG
+    assert s.entry == 4116.50
+    assert s.targets == [4126.50, 4136.50, 4146.50]
+
+
+def test_une_consigne_de_gestion_a_la_fin_ne_cree_pas_de_fausse_cible():
+    # « À TP1 : Half Close + Break Even (BE) » porte le motif d'une cible mais
+    # aucun prix. La ligne ne doit pas écraser la vraie TP1.
+    assert parse(GOLD_NUMEROTE).targets[0] == 4126.50
+
+
+def test_half_close_plus_break_even_est_reconnu():
+    # Les mots qui s'intercalent varient ; la paire moitié / point mort, non.
+    assert any("moitié" in n for n in parse(GOLD_NUMEROTE).notes)
+
+
+def test_des_cibles_listees_sur_une_seule_ligne_sont_lues_dans_lordre():
+    # « TP 74170 / 73500 / 73000 » : aucun numéro, l'ordre d'écriture fait foi.
+    s = parse(BTC_GROUPE)
+    assert s.targets == [74170.0, 73500.0, 73000.0]
+
+
+def test_un_prix_ne_se_fait_pas_passer_pour_un_numero_de_cible():
+    # Sans frontière de mot après le numéro, « TP 74170 » se lirait « TP 7 »
+    # suivi du prix 4170 : une cible inventée, plausible, et fausse de deux
+    # ordres de grandeur.
+    assert 4170.0 not in parse(BTC_GROUPE).targets
+
+
+def test_une_fourchette_abregee_retient_le_premier_prix():
+    # « PE 74400-500 » abrège 74400–74500. Le tiret colle aux chiffres, donc
+    # ce n'est pas lu comme une fourchette — et le premier nombre est de toute
+    # façon la référence retenue.
+    assert parse(BTC_GROUPE).entry == 74400.0
+
+
+def test_les_cryptos_sont_reconnues():
+    assert parse(BTC_GROUPE).symbol == "BTCUSD"
+
 
 if __name__ == "__main__":
     import sys

@@ -34,6 +34,11 @@ ALIASES = {
     "GER40": ["GER40", "DAX40", "DAX", "DE40", "GER30"],
     "US500": ["SP500", "S&P500", "S&P 500", "US500"],
     "EURUSD": ["EUR/USD", "EURUSD", "EUR USD"],
+    "GBPUSD": ["GBP/USD", "GBPUSD", "GBP USD"],
+    "USDJPY": ["USD/JPY", "USDJPY", "USD JPY"],
+    "BTCUSD": ["BTC/USD", "BTCUSD", "BITCOIN", "BTC "],
+    "ETHUSD": ["ETH/USD", "ETHUSD", "ETHEREUM"],
+    "USOIL": ["USOIL", "WTI", "CRUDE"],
 }
 
 #: Mots qui annoncent un achat ou une vente, dans les trois langues croisées.
@@ -56,7 +61,13 @@ NOMBRE = r"\d{1,3}(?:[  ]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?"
 #: Consignes de gestion qu'on relève sans les appliquer : elles décrivent le
 #: découpage voulu par l'émetteur, et c'est au trader de dire s'il le suit.
 CONSIGNES = (
-    (r"half\s*\+?\s*be", "moitié sortie à TP1 puis point mort"),
+    # « Half + BE », « Half Close + Break Even (BE) », « 50% + BE »… Les mots
+    # qui s'intercalent varient d'un émetteur à l'autre ; ce qui ne varie pas,
+    # c'est la paire moitié / point mort.
+    (
+        r"(?:half|moiti[ée]|50\s*%)[^\n]{0,20}?(?:\bbe\b|break\s*even)",
+        "moitié sortie à TP1 puis point mort",
+    ),
     (r"\bbe\s+obligatoire", "point mort obligatoire après TP1"),
     (r"risque?\s*(?:max\w*)?\s*:?\s*(\d+(?:[.,]\d+)?)\s*%", "risque conseillé : {} %"),
     (r"risque\s+(\d+(?:[.,]\d+)?)\s*r\b", "risque conseillé : {} R"),
@@ -196,23 +207,42 @@ def _stop(texte: str) -> float:
 
 
 def _cibles(texte: str) -> list[float]:
-    """Les objectifs, dans l'ordre où ils sont numérotés.
+    """Les objectifs, numérotés ou listés sur une seule ligne.
 
-    Triés sur leur numéro et non sur leur ordre d'apparition : un émetteur
-    peut les écrire à l'envers, et c'est le numéro qui dit laquelle est la
-    plus proche.
+    Deux écritures coexistent chez les émetteurs. La numérotée, « TP1 : 4126 »
+    sur une ligne chacune. Et la groupée, « TP 74170 / 73500 / 73000 », où
+    aucun numéro n'apparaît et où l'ordre d'écriture fait foi.
+
+    La forme numérotée est cherchée en premier et exige une **frontière de
+    mot** après le numéro. Sans cette exigence, « TP 74170 » se lirait
+    « TP 7 » suivi du prix 4170 : une cible inventée, plausible, et fausse de
+    deux ordres de grandeur. C'est le genre d'erreur qui ne se voit pas sur un
+    écran de téléphone.
     """
-    trouvees: dict[int, float] = {}
+    numerotees: dict[int, float] = {}
     for ligne in texte.splitlines():
         marque = re.search(r"\bTP\s*(\d)\b|\bTARGET\s*(\d)\b", ligne, re.IGNORECASE)
         if not marque:
             continue
         numero = int(marque.group(1) or marque.group(2))
-        apres = ligne[marque.end():]
-        nombres = re.findall(NOMBRE, apres)
+        nombres = re.findall(NOMBRE, ligne[marque.end():])
         if nombres:
-            trouvees[numero] = _nombre(nombres[0])
-    return [trouvees[n] for n in sorted(trouvees)]
+            numerotees[numero] = _nombre(nombres[0])
+    if numerotees:
+        # Triées sur le numéro et non sur la position : un émetteur peut les
+        # écrire à l'envers, et c'est le numéro qui dit laquelle est la plus
+        # proche.
+        return [numerotees[n] for n in sorted(numerotees)]
+
+    # Forme groupée. Cherchée seulement si la numérotée n'a rien donné, pour
+    # qu'un « À TP1 : Half Close » ne vienne pas brouiller une liste propre.
+    for ligne in texte.splitlines():
+        if not re.search(r"\b(TP|TARGETS?|OBJECTIFS?)\b", ligne, re.IGNORECASE):
+            continue
+        nombres = re.findall(NOMBRE, ligne)
+        if len(nombres) >= 2:
+            return [_nombre(n) for n in nombres]
+    return []
 
 
 def _consignes(texte: str) -> list[str]:
