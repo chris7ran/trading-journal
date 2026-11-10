@@ -1040,6 +1040,12 @@ def main() -> int:
         print(f"hôtes publics acceptés : {', '.join(extra_hosts)}", file=sys.stderr)
     try:
         asyncio.run(_serve(app, bridge, args))
+    except KeyboardInterrupt:
+        # Ctrl+C est la façon normale d'arrêter ce serveur, pas une anomalie.
+        # Sans ce filet, Python remonte la trace complète de l'annulation et
+        # l'arrêt ressemble à un plantage — alors que la fermeture propre des
+        # terminaux, elle, a bien eu lieu dans le `finally`.
+        print("arrêt demandé", file=sys.stderr)
     finally:
         bridge.stop_all()
     return 0
@@ -1102,7 +1108,13 @@ async def _serve(app: Any, bridge: Bridge, args) -> None:
     finally:
         for tache in surveillances:
             tache.cancel()
-        await asyncio.gather(*surveillances, return_exceptions=True)
+        try:
+            await asyncio.gather(*surveillances, return_exceptions=True)
+        except asyncio.CancelledError:
+            # Ctrl+C annule aussi la tâche qui exécute ce nettoyage. Les
+            # watchers ont déjà reçu leur annulation ci-dessus ; attendre
+            # qu'ils la terminent n'apporte rien et masquerait l'arrêt.
+            pass
 
 
 if __name__ == "__main__":
