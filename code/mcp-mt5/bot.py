@@ -282,7 +282,10 @@ class Bot:
             return
 
         if apercu.get("decision") == "refusé" and "plan" not in apercu:
-            self._envoyer(chat, f"Refusé : {apercu.get('reason', 'sans raison donnée')}")
+            message = f"Refusé : {apercu.get('reason', 'sans raison donnée')}"
+            if apercu.get("hint"):
+                message += f"\n\n{apercu['hint']}"
+            self._envoyer(chat, message)
             return
 
         jeton = secrets.token_urlsafe(8)
@@ -298,7 +301,14 @@ class Bot:
     def _bouton(self, requete: dict) -> None:
         donnee = requete.get("data", "")
         chat = requete["message"]["chat"]["id"]
-        self._api("answerCallbackQuery", {"callback_query_id": requete["id"]})
+        try:
+            self._api("answerCallbackQuery", {"callback_query_id": requete["id"]})
+        except RuntimeError:
+            # « query is too old » : le bouton a été pressé avant un
+            # redémarrage. Cet appel ne sert qu'à éteindre le sablier de
+            # l'interface ; son échec ne doit pas empêcher de traiter la
+            # demande, qui est toujours valable.
+            pass
 
         if (requete.get("from") or {}).get("id") != self.owner:
             return
@@ -372,10 +382,29 @@ class Bot:
     # --- Telegram -----------------------------------------------------------
 
     def _envoyer(self, chat: int, texte: str, boutons: dict | None = None) -> None:
+        """Envoyer, en retombant sur du texte brut si la mise en forme casse.
+
+        Telegram refuse **tout le message** si son analyse Markdown trouve une
+        étoile ou un tiret bas non apparié. Or les contenus dynamiques en
+        apportent sans prévenir : un nom de symbole, un message d'erreur, une
+        note d'émetteur. Le résultat est le pire possible — aucune réponse, là
+        où on attend un chiffrage.
+
+        La mise en forme n'est donc pas un acquis mais une tentative. Si elle
+        échoue, le même texte repart sans balises : moins lisible, et infiniment
+        préférable au silence.
+        """
         charge = {"chat_id": chat, "text": texte, "parse_mode": "Markdown"}
         if boutons:
             charge["reply_markup"] = json.dumps(boutons)
-        self._api("sendMessage", charge)
+        try:
+            self._api("sendMessage", charge)
+        except RuntimeError as exc:
+            if "parse entities" not in str(exc):
+                raise
+            charge.pop("parse_mode")
+            charge["text"] = texte.replace("*", "").replace("_", "")
+            self._api("sendMessage", charge)
 
     def _api(self, methode: str, parametres: dict, timeout: int = 30) -> dict:
         url = API.format(token=self.token, method=methode)

@@ -531,10 +531,30 @@ async def _assess(
     )
     broker_symbol = compte.to_broker(symbol)
 
-    info = await terminal.call("account")
-    spec_raw = await terminal.call("symbol", symbol=broker_symbol)
-    quote = await terminal.call("quote", symbol=broker_symbol)
-    day = await terminal.call("day_state")
+    try:
+        info = await terminal.call("account")
+        spec_raw = await terminal.call("symbol", symbol=broker_symbol)
+        quote = await terminal.call("quote", symbol=broker_symbol)
+        day = await terminal.call("day_state")
+    except ToolError as exc:
+        # Un symbole que le broker ne propose pas, un terminal déconnecté :
+        # ce sont des réponses, pas des pannes. Les laisser remonter ferait
+        # emballer l'erreur par le SDK en « exception inattendue », avec une
+        # trace illisible là où une phrase suffit — et le modèle, comme
+        # l'humain, perdrait l'information utile dans le bruit.
+        refus = {
+            "account": account,
+            "decision": "refusé",
+            "reason": str(exc),
+            "symbol": broker_symbol,
+            "journal_symbol": symbol,
+        }
+        if broker_symbol == symbol:
+            refus["hint"] = (
+                f"« {symbol} » a été transmis tel quel au terminal : aucune "
+                f"correspondance n'est déclarée pour lui dans accounts.toml."
+            )
+        return (refus, None, None) if _detail else refus
 
     spec = plan.SymbolSpec(
         name=spec_raw["name"], digits=spec_raw["digits"], point=spec_raw["point"],
