@@ -30,6 +30,12 @@ from multiprocessing.connection import Connection
 from pathlib import Path
 from typing import Any
 
+# The only import from the SDK outside `main()`, and it has to be here: the
+# class below derives from it. Windows respawns each worker by re-importing
+# this module, so every child pays for it too — a fraction of a second against
+# a terminal that takes seconds to log in.
+from mcp.server.mcpserver.exceptions import ToolError as _AnticipatedFailure
+
 import config
 import guards
 import journal
@@ -54,8 +60,17 @@ CALL_TIMEOUT_SECONDS = 120
 DEFAULT_HISTORY_DAYS = 7
 
 
-class ToolError(Exception):
-    """A failure to report to the caller, in plain language."""
+class ToolError(_AnticipatedFailure):
+    """A failure to report to the caller, in plain language.
+
+    The base class is what makes the message travel. The SDK sorts tool
+    failures in two: its own `ToolError` is an anticipated refusal, returned
+    with the text intact for the caller to read; anything else is a crash, and
+    the caller gets only `Error executing tool <name>` while the traceback goes
+    to the server log. Deriving from a bare `Exception` put every refusal we
+    write — unknown account, unknown symbol, unreadable date — in the second
+    pile, so the client saw a blank error and the reason stayed on the VM.
+    """
 
 
 # --- One child process per terminal -----------------------------------------

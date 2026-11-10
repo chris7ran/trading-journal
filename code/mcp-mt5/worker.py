@@ -66,6 +66,21 @@ class WorkerError(Exception):
     """A failure the parent should report rather than retry."""
 
 
+def _unknown_symbol(symbol: str) -> WorkerError:
+    """Un nom que le terminal ne connaît pas, et la façon d'en sortir.
+
+    La cause est presque toujours la même : le broker suffixe ses symboles
+    (`GOLD#`, `BTCUSD#`) et la table `[account.symbols]` ne traduit pas encore
+    celui-ci. Sans la seconde phrase, le message est exact et inutile — il dit
+    que quelque chose manque, pas où regarder.
+    """
+    return WorkerError(
+        f"symbole inconnu du terminal : {symbol} — "
+        f"find_symbols donne son nom exact chez le broker, "
+        f"à déclarer ensuite dans [account.symbols]"
+    )
+
+
 # --- Entry point -------------------------------------------------------------
 
 
@@ -458,7 +473,7 @@ def _symbol(state: _State, symbol: str) -> dict:
     """Everything position sizing and order placement need about an instrument."""
     mt5 = state.mt5
     if not mt5.symbol_select(symbol, True):
-        raise WorkerError(f"symbole inconnu du terminal : {symbol}")
+        raise _unknown_symbol(symbol)
     info = mt5.symbol_info(symbol)
     if info is None:
         raise WorkerError(f"spécifications illisibles pour {symbol} : {mt5.last_error()}")
@@ -494,7 +509,7 @@ def _symbol(state: _State, symbol: str) -> dict:
 def _quote(state: _State, symbol: str) -> dict:
     mt5 = state.mt5
     if not mt5.symbol_select(symbol, True):
-        raise WorkerError(f"symbole inconnu du terminal : {symbol}")
+        raise _unknown_symbol(symbol)
     tick = mt5.symbol_info_tick(symbol)
     if tick is None:
         raise WorkerError(f"aucune cotation pour {symbol} : {mt5.last_error()}")
@@ -593,7 +608,7 @@ def _margin_for(state: _State, symbol: str, direction: str, volume: float) -> di
     """
     mt5 = state.mt5
     if not mt5.symbol_select(symbol, True):
-        raise WorkerError(f"symbole inconnu du terminal : {symbol}")
+        raise _unknown_symbol(symbol)
     tick = mt5.symbol_info_tick(symbol)
     if tick is None or not (tick.bid and tick.ask):
         raise WorkerError(f"aucune cotation pour {symbol}")
