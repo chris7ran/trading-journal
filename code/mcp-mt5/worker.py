@@ -609,6 +609,31 @@ def _margin_for(state: _State, symbol: str, direction: str, volume: float) -> di
     return {"symbol": symbol, "volume": volume, "price": price, "margin": margin}
 
 
+def _find_symbols(state: _State, query: str) -> list[dict]:
+    """Chercher un instrument parmi **tous** ceux du broker, pas seulement
+    ceux du Market Watch.
+
+    Un symbole absent du Market Watch existe quand même et peut y être ajouté.
+    Ne chercher que parmi les visibles ferait conclure à tort qu'un instrument
+    n'est pas proposé — alors qu'il l'est, sous un nom qu'on n'avait pas
+    deviné. Chez XM, tout porte un suffixe lié au type de compte.
+    """
+    mt5 = state.mt5
+    motif = f"*{query.strip().upper()}*"
+    trouves = mt5.symbols_get(motif) or ()
+    return [
+        {
+            "name": s.name,
+            "description": s.description,
+            "visible": s.visible,
+            "trade_mode": _TRADE_MODES.get(s.trade_mode, str(s.trade_mode)),
+            "volume_min": s.volume_min,
+            "volume_step": s.volume_step,
+        }
+        for s in trouves
+    ]
+
+
 def _clock(state: _State) -> dict:
     """Décalage d'horloge, et l'échantillon qui l'a produit.
 
@@ -869,6 +894,7 @@ _HANDLERS = {
     "symbol": _symbol,
     "quote": _quote,
     "market_watch": _market_watch,
+    "find_symbols": _find_symbols,
     "clock": _clock,
     "day_state": _day_state,
     "margin_for": _margin_for,

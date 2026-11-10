@@ -138,6 +138,7 @@ sur la même VM Windows.
 | `get_symbol_spec` | Pas de volume, valeur du tick, modes d'exécution, distance minimale |
 | `get_quote` | Bid, ask, spread en points |
 | `list_market_watch` | Symboles présents dans le Market Watch |
+| `find_symbols` | Cherche un instrument parmi **tous** ceux du broker, par fragment de nom |
 | `get_clock` | Décalage entre l'horloge du broker et l'UTC réel |
 | `preview_plan` | Chiffre un plan de trade et le passe aux garde-fous, **sans rien envoyer** |
 | `execute_plan` | Envoie le plan au marché, une jambe par cible |

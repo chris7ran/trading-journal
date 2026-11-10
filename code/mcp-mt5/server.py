@@ -490,6 +490,29 @@ def register_tools(mcp: Any, bridge: Bridge) -> None:
         return await bridge.get(account).call("cancel", magic=int(magic))
 
     @mcp.tool()
+    async def find_symbols(account: str, query: str) -> dict:
+        """Chercher un instrument chez le broker, par fragment de nom.
+
+        Cherche parmi **tous** les symboles, pas seulement ceux du Market
+        Watch : un instrument absent de la liste existe quand même et peut y
+        être ajouté. Les brokers renomment et suffixent — chez XM tout porte
+        une marque liée au type de compte — donc un nom qui semble évident est
+        rarement le bon.
+
+        À utiliser quand un signal porte un instrument que le pont refuse :
+        cherchez `BTC`, `NAS`, `GOLD`, et déclarez la correspondance trouvée
+        dans `accounts.toml`.
+        """
+        terminal = bridge.get(account)
+        trouves = await terminal.call("find_symbols", query=query)
+        return {
+            "account": account,
+            "query": query,
+            "count": len(trouves),
+            "symbols": trouves,
+        }
+
+    @mcp.tool()
     async def get_clock(account: str) -> dict:
         """Écart entre l'horloge du serveur du broker et l'UTC réel.
 
