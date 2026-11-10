@@ -383,7 +383,18 @@ py -3.12 bot.py
 ```
 
 `MCP_MT5_URL` et `MCP_MT5_TOKEN` sont repris de l'environnement du pont.
-`BOT_ACCOUNT` choisit le compte, `BOT_RISK_PCT` le risque par plan.
+`BOT_RISK_PCT` fixe le risque par plan.
+
+`BOT_ACCOUNTS` choisit les comptes servis, séparés par des virgules ; sans
+elle, tous ceux que le pont expose. `BOT_ACCOUNT` au singulier reste accepté.
+Un alias absent du pont arrête le démarrage plutôt que d'être ignoré.
+
+Avec plusieurs comptes, un signal est chiffré sur chacun et la proposition
+porte une rangée de boutons par compte — le choix se fait en voyant le volume,
+le risque et le ratio de chacun. Un compte dont le chiffrage a échoué ou qui
+n'a pas de plan n'a pas de bouton. Chaque compte garde ses propres garde-fous
+et **il n'existe aucun plafond agrégé** : servir deux comptes ouvre deux
+positions, et le risque s'additionne.
 
 ## Tests
 

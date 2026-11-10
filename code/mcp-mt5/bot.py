@@ -23,8 +23,19 @@ Configuration, par l'environnement :
     TELEGRAM_OWNER_ID     ton identifiant Telegram ; tout autre est ignoré
     MCP_MT5_URL           http://127.0.0.1:8765/mcp
     MCP_MT5_TOKEN         le jeton du pont
-    BOT_ACCOUNT           alias du compte, par défaut le premier configuré
+    BOT_ACCOUNTS          alias séparés par des virgules ; par défaut, tous
+                          ceux que le pont expose. `BOT_ACCOUNT` au singulier
+                          reste accepté.
     BOT_RISK_PCT          risque par plan, par défaut le plafond du compte
+
+Avec plusieurs comptes — plusieurs brokers, ou une démo à côté d'un compte
+financé — un signal est chiffré sur chacun et la proposition porte une rangée
+de boutons par compte. Le choix se fait donc en voyant les chiffres de chacun,
+plutôt qu'en se souvenant lequel était actif.
+
+Chaque compte garde ses propres garde-fous, et il n'existe **aucun plafond
+agrégé** : appuyer sur deux comptes ouvre deux positions, et le risque
+s'additionne.
 """
 
 from __future__ import annotations
@@ -36,7 +47,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import mcpclient
 import signals
@@ -56,18 +67,26 @@ POLL_TIMEOUT = 30
 
 @dataclass
 class Proposition:
-    signal: signals.Signal
+    signal: signals.Signal | None
     entry: float
     cree: float
+    #: Les comptes offerts, dans l'ordre des boutons. L'index voyage dans le
+    #: `callback_data` : un bouton doit désigner son compte sans dépendre de
+    #: l'ordre de configuration au moment où il est pressé.
+    comptes: list[str]
+    #: Ceux sur lesquels quelque chose est déjà parti. Un second appui sur le
+    #: même bouton — doigt qui glisse, interface qui n'a pas rafraîchi — ne
+    #: doit pas ouvrir une seconde position.
+    envoyes: set[str] = field(default_factory=set)
 
 
 class Bot:
     def __init__(self, token: str, owner: int, client: mcpclient.Client,
-                 compte: str, risque: float | None) -> None:
+                 comptes: list[str], risque: float | None) -> None:
         self.token = token
         self.owner = owner
         self.client = client
-        self.compte = compte
+        self.comptes = comptes
         self.risque = risque
         self.propositions: dict[str, Proposition] = {}
         self.offset = 0
@@ -75,7 +94,7 @@ class Bot:
     # --- Boucle -------------------------------------------------------------
 
     def run(self) -> None:
-        print(f"bot à l'écoute, compte {self.compte}", flush=True)
+        print(f"bot à l'écoute, compte(s) {', '.join(self.comptes)}", flush=True)
         attente = 1
         while True:
             try:
@@ -185,7 +204,7 @@ class Bot:
                 "Rien n'est envoyé sans que tu appuies sur un bouton.\n\n"
                 "« ferme tout » ou /fermer pour solder ce qui est ouvert.\n"
                 "/etat pour le solde et les positions.\n\n"
-                f"Compte : {self.compte}",
+                f"Compte(s) : {', '.join(self.comptes)}",
             )
         elif texte.startswith("/etat"):
             self._etat(chat)
@@ -195,24 +214,31 @@ class Bot:
             self._envoyer(chat, "Commandes : /aide, /etat, /fermer")
 
     def _etat(self, chat: int) -> None:
-        try:
-            compte = self.client.call("get_account", {"account": self.compte})
-            positions = self.client.call("get_positions", {"account": self.compte})
-        except mcpclient.McpError as exc:
-            self._envoyer(chat, f"Pont injoignable : {exc}")
-            return
+        blocs = []
+        for alias in self.comptes:
+            try:
+                compte = self.client.call("get_account", {"account": alias})
+                positions = self.client.call("get_positions", {"account": alias})
+            except mcpclient.McpError as exc:
+                # Un compte muet ne doit pas emporter les autres : c'est
+                # justement quand un terminal décroche qu'on a besoin de voir
+                # l'état de ceux qui tiennent encore.
+                blocs.append(f"*{alias}* — injoignable : {exc}")
+                continue
 
-        lignes = [
-            f"*{self.compte}* — {compte['balance']:,.0f} {compte['currency']}".replace(",", " "),
-            f"équité {compte['equity']:,.2f} · marge libre {compte['margin_free']:,.0f}".replace(",", " "),
-            f"{positions['count']} position(s) ouverte(s)",
-        ]
-        for p in positions["positions"]:
-            lignes.append(
-                f"· {p['journal_symbol']} {p['direction']} {p['volume']} "
-                f"@ {p['open_price']} → {p['profit']:+.2f}"
-            )
-        self._envoyer(chat, "\n".join(lignes))
+            lignes = [
+                f"*{alias}* — {compte['balance']:,.0f} {compte['currency']}".replace(",", " "),
+                f"équité {compte['equity']:,.2f} · marge libre {compte['margin_free']:,.0f}".replace(",", " "),
+                f"{positions['count']} position(s) ouverte(s)",
+            ]
+            for p in positions["positions"]:
+                lignes.append(
+                    f"· {p['journal_symbol']} {p['direction']} {p['volume']} "
+                    f"@ {p['open_price']} → {p['profit']:+.2f}"
+                )
+            blocs.append("\n".join(lignes))
+
+        self._envoyer(chat, "\n\n".join(blocs))
 
     def _fermer(self, chat: int, magic: int | None = None) -> None:
         """Proposer la fermeture : la liste d'abord, l'action après.
@@ -222,35 +248,54 @@ class Bot:
         la main dans le terminal, et c'est exactement le genre de position
         qu'on oublie avoir.
         """
-        try:
-            positions = self.client.call("get_positions", {"account": self.compte})
-        except mcpclient.McpError as exc:
-            self._envoyer(chat, f"Pont injoignable : {exc}")
-            return
+        blocs: list[str] = []
+        ouverts: list[str] = []
+        for alias in self.comptes:
+            try:
+                positions = self.client.call("get_positions", {"account": alias})
+            except mcpclient.McpError as exc:
+                blocs.append(f"*{alias}* — injoignable : {exc}")
+                continue
+            if not positions["count"]:
+                continue
 
-        if not positions["count"]:
-            self._envoyer(chat, "Aucune position ouverte.")
-            return
+            ouverts.append(alias)
+            lignes = [f"*{positions['count']} position(s)* sur {alias}", ""]
+            flottant = 0.0
+            for p in positions["positions"]:
+                flottant += p["profit"]
+                origine = f"plan {p['magic']}" if p["magic"] else "ouverte à la main"
+                lignes.append(
+                    f"· {p['journal_symbol']} {p['direction']} {p['volume']} "
+                    f"@ {p['open_price']} → {p['profit']:+.2f}  _{origine}_"
+                )
+            lignes += ["", f"Flottant total : *{flottant:+.2f}*"]
+            blocs.append("\n".join(lignes))
 
-        lignes = [f"*{positions['count']} position(s)* sur {self.compte}", ""]
-        flottant = 0.0
-        for p in positions["positions"]:
-            flottant += p["profit"]
-            origine = f"plan {p['magic']}" if p["magic"] else "ouverte à la main"
-            lignes.append(
-                f"· {p['journal_symbol']} {p['direction']} {p['volume']} "
-                f"@ {p['open_price']} → {p['profit']:+.2f}  _{origine}_"
-            )
-        lignes += ["", f"Flottant total : *{flottant:+.2f}*"]
+        if not ouverts:
+            self._envoyer(chat, "\n\n".join(["Aucune position ouverte.", *blocs]))
+            return
 
         jeton = secrets.token_urlsafe(6)
-        self.propositions[jeton] = Proposition(None, 0.0, time.time())
-        self._envoyer(chat, "\n".join(lignes), boutons={
-            "inline_keyboard": [[
-                {"text": "Tout fermer", "callback_data": f"f:{jeton}"},
-                {"text": "Annuler", "callback_data": f"n:{jeton}"},
+        self.propositions[jeton] = Proposition(None, 0.0, time.time(), ouverts)
+        annuler = {"text": "Annuler", "callback_data": f"n:{jeton}:0"}
+
+        if len(ouverts) == 1:
+            rangees = [[
+                {"text": "Tout fermer", "callback_data": f"f:{jeton}:0"},
+                annuler,
             ]]
-        })
+        else:
+            # Une rangée par compte, et jamais de « tout fermer partout » :
+            # solder deux brokers d'un seul appui est une action qu'on ne
+            # devrait pas pouvoir déclencher sans la nommer deux fois.
+            rangees = [
+                [{"text": f"Tout fermer · {a}", "callback_data": f"f:{jeton}:{i}"}]
+                for i, a in enumerate(ouverts)
+            ]
+            rangees.append([annuler])
+
+        self._envoyer(chat, "\n\n".join(blocs), boutons={"inline_keyboard": rangees})
 
     def _chiffrer(self, chat: int, texte: str) -> None:
         try:
@@ -264,38 +309,54 @@ class Bot:
         # ce bord-là.
         entree = signal.entry_first
 
-        arguments = {
-            "account": self.compte,
-            "symbol": signal.symbol,
-            "direction": signal.direction,
-            "stop_loss": signal.stop_loss,
-            "targets": signal.targets,
-            "entry": entree,
-        }
-        if self.risque:
-            arguments["risk_pct"] = self.risque
+        apercus: list[tuple[str, dict]] = []
+        for alias in self.comptes:
+            arguments = {
+                "account": alias,
+                "symbol": signal.symbol,
+                "direction": signal.direction,
+                "stop_loss": signal.stop_loss,
+                "targets": signal.targets,
+                "entry": entree,
+            }
+            if self.risque:
+                arguments["risk_pct"] = self.risque
+            try:
+                apercus.append((alias, self.client.call("preview_plan", arguments)))
+            except mcpclient.McpError as exc:
+                apercus.append((alias, {"erreur": str(exc)}))
 
-        try:
-            apercu = self.client.call("preview_plan", arguments)
-        except mcpclient.McpError as exc:
-            self._envoyer(chat, f"Chiffrage impossible : {exc}")
-            return
+        if len(apercus) == 1:
+            alias, apercu = apercus[0]
+            if "erreur" in apercu:
+                self._envoyer(chat, f"Chiffrage impossible : {apercu['erreur']}")
+                return
+            if apercu.get("decision") == "refusé" and "plan" not in apercu:
+                message = f"Refusé : {apercu.get('reason', 'sans raison donnée')}"
+                if apercu.get("hint"):
+                    message += f"\n\n{apercu['hint']}"
+                self._envoyer(chat, message)
+                return
 
-        if apercu.get("decision") == "refusé" and "plan" not in apercu:
-            message = f"Refusé : {apercu.get('reason', 'sans raison donnée')}"
-            if apercu.get("hint"):
-                message += f"\n\n{apercu['hint']}"
-            self._envoyer(chat, message)
+            jeton = secrets.token_urlsafe(8)
+            self.propositions[jeton] = Proposition(signal, entree, time.time(), [alias])
+            self._purger()
+            self._envoyer(
+                chat,
+                _rendre(signal, apercu, entree),
+                boutons=_boutons(jeton, apercu["decision"], 0),
+            )
             return
 
         jeton = secrets.token_urlsafe(8)
-        self.propositions[jeton] = Proposition(signal, entree, time.time())
+        self.propositions[jeton] = Proposition(
+            signal, entree, time.time(), [a for a, _ in apercus]
+        )
         self._purger()
-
         self._envoyer(
             chat,
-            _rendre(signal, apercu, entree),
-            boutons=_boutons(jeton, apercu["decision"]),
+            _rendre_comptes(signal, apercus, entree),
+            boutons=_boutons_comptes(jeton, apercus),
         )
 
     def _bouton(self, requete: dict) -> None:
@@ -313,11 +374,17 @@ class Bot:
         if (requete.get("from") or {}).get("id") != self.owner:
             return
 
-        action, _, jeton = donnee.partition(":")
+        action, _, reste = donnee.partition(":")
+        jeton, _, rang = reste.partition(":")
         proposition = self.propositions.get(jeton)
         if proposition is None:
             self._envoyer(chat, "Proposition expirée. Retransfère le signal.")
             return
+
+        alias = proposition.comptes[int(rang)] if rang.isdigit() and int(rang) < len(
+            proposition.comptes
+        ) else proposition.comptes[0]
+
         if action == "n":
             del self.propositions[jeton]
             self._envoyer(chat, "Ignoré.")
@@ -326,17 +393,25 @@ class Bot:
             del self.propositions[jeton]
             try:
                 resultat = self.client.call(
-                    "close_positions", {"account": self.compte, "confirm": True}
+                    "close_positions", {"account": alias, "confirm": True}
                 )
             except mcpclient.McpError as exc:
                 self._envoyer(chat, f"Échec : {exc}")
                 return
-            self._envoyer(chat, _rendre_fermeture(resultat))
+            self._envoyer(chat, f"*{alias}*\n{_rendre_fermeture(resultat)}")
+            return
+
+        if alias in proposition.envoyes:
+            # Les boutons restent affichés après un envoi réussi : Telegram ne
+            # les retire pas et les laisser vivants sert justement à offrir
+            # l'autre compte. Il faut donc refuser ici, pas espérer que
+            # personne ne réappuie.
+            self._envoyer(chat, f"Déjà envoyé sur *{alias}*. Retransfère le signal pour un second plan.")
             return
 
         signal = proposition.signal
         arguments = {
-            "account": self.compte,
+            "account": alias,
             "symbol": signal.symbol,
             "direction": signal.direction,
             "stop_loss": signal.stop_loss,
@@ -359,19 +434,24 @@ class Bot:
             self._envoyer(chat, f"Échec : {exc}")
             return
 
-        # La proposition n'est consommée que si quelque chose est parti. Un
-        # refus doit laisser l'autre bouton utilisable : le 09/11, un plan
+        # Un refus doit laisser l'autre bouton utilisable : le 09/11, un plan
         # refusé au marché pour cause de ratio dégradé aurait été accepté en
         # ordre déposé, puisque le dimensionnement part alors du niveau visé.
         # Obliger à retransférer le signal pour essayer l'autre voie, c'était
         # perdre les secondes qui font justement la différence.
+        #
+        # Un succès ne consomme plus la proposition entière, seulement le
+        # compte servi : les rangées des autres comptes doivent survivre à
+        # l'envoi sur le premier, sinon le choix offert n'en est pas un.
         if resultat.get("sent"):
-            self.propositions.pop(jeton, None)
+            proposition.envoyes.add(alias)
 
+        prefixe = f"*{alias}*\n" if len(proposition.comptes) > 1 else ""
         self._envoyer(
             chat,
-            _rendre_envoi(resultat),
-            boutons=None if resultat.get("sent") else _boutons(jeton, "à confirmer"),
+            prefixe + _rendre_envoi(resultat),
+            boutons=None if resultat.get("sent")
+            else _boutons(jeton, "à confirmer", proposition.comptes.index(alias)),
         )
 
     def _purger(self) -> None:
@@ -461,7 +541,83 @@ def _rendre(signal: signals.Signal, apercu: dict, entree: float) -> str:
     return "\n".join(lignes)
 
 
-def _boutons(jeton: str, decision: str) -> dict:
+def _rendre_comptes(
+    signal: signals.Signal, apercus: list[tuple[str, dict]], entree: float
+) -> str:
+    """Le signal une fois, puis une ligne de synthèse par compte.
+
+    Répéter les jambes et les constats de chaque compte donnerait un pavé que
+    personne ne lit sur un téléphone, au moment précis où il faut décider
+    vite. Ne survit ici que ce qui diffère réellement d'un compte à l'autre —
+    le volume, le risque en devise, le ratio et le verdict — plus les constats
+    bloquants, parce qu'un compte refusé doit dire pourquoi sans qu'on ait à
+    le demander.
+    """
+    lignes = [
+        f"*{signal.symbol} {signal.direction}*",
+        f"entrée prévue {entree} · stop {signal.stop_loss}",
+        "cibles " + " / ".join(str(c) for c in signal.targets),
+        "",
+    ]
+
+    for alias, apercu in apercus:
+        if "erreur" in apercu:
+            lignes.append(f"*{alias}* — chiffrage impossible : {apercu['erreur']}")
+            lignes.append("")
+            continue
+
+        plan = apercu.get("plan")
+        if not plan:
+            lignes.append(
+                f"*{alias}* — refusé : {apercu.get('reason', 'sans raison donnée')}"
+            )
+            lignes.append("")
+            continue
+
+        lignes.append(f"*{alias}* — {apercu['decision'].upper()}")
+        lignes.append(
+            f"{plan['total_volume']} lot · {plan['risk_amount']:,.0f} "
+            f"{plan['currency']} ({plan['risk_pct']:.2%}) · R {plan['blended_r']} "
+            f"({plan['zone']})".replace(",", " ")
+        )
+        for f in apercu.get("findings", []):
+            if f["level"] == "block":
+                lignes.append(f"⛔ {f['message']}")
+        lignes.append("")
+
+    if signal.notes:
+        lignes.append("_" + " · ".join(signal.notes) + "_")
+
+    return "\n".join(lignes).rstrip()
+
+
+def _boutons_comptes(jeton: str, apercus: list[tuple[str, dict]]) -> dict:
+    """Une rangée par compte chiffré, et rien pour ceux qui n'ont pas de plan.
+
+    Un compte dont le terminal n'a pas répondu, ou dont le signal porte un
+    symbole qu'il ne connaît pas, n'a pas de bouton du tout. Offrir l'action
+    puis échouer à l'appui ferait croire à une panne du pont alors que le
+    chiffrage avait déjà dit non.
+    """
+    rangees = []
+    for rang, (alias, apercu) in enumerate(apercus):
+        if "erreur" in apercu or not apercu.get("plan"):
+            continue
+        depot = {"text": f"Déposer · {alias}", "callback_data": f"a:{jeton}:{rang}"}
+        if apercu["decision"] == "refusé":
+            rangees.append([depot])
+            continue
+        envoyer = "Exécuter" if apercu["decision"] == "accepté" else "Exécuter quand même"
+        rangees.append([
+            {"text": f"{envoyer} · {alias}", "callback_data": f"x:{jeton}:{rang}"},
+            depot,
+        ])
+
+    rangees.append([{"text": "Ignorer", "callback_data": f"n:{jeton}:0"}])
+    return {"inline_keyboard": rangees}
+
+
+def _boutons(jeton: str, decision: str, rang: int) -> dict:
     """Les actions offertes, selon le verdict.
 
     Un plan refusé garde le dépôt. Le refus porte sur l'entrée **au marché** :
@@ -474,8 +630,8 @@ def _boutons(jeton: str, decision: str) -> dict:
     bouton pour le faire. Un système qui dit quoi faire sans permettre de le
     faire est pire qu'un système muet : il donne le sentiment d'avoir décidé.
     """
-    depot = {"text": "Déposer et attendre", "callback_data": f"a:{jeton}"}
-    ignorer = {"text": "Ignorer", "callback_data": f"n:{jeton}"}
+    depot = {"text": "Déposer et attendre", "callback_data": f"a:{jeton}:{rang}"}
+    ignorer = {"text": "Ignorer", "callback_data": f"n:{jeton}:{rang}"}
 
     if decision == "refusé":
         return {"inline_keyboard": [[depot, ignorer]]}
@@ -483,7 +639,7 @@ def _boutons(jeton: str, decision: str) -> dict:
     envoyer = "Exécuter" if decision == "accepté" else "Exécuter quand même"
     return {
         "inline_keyboard": [[
-            {"text": envoyer, "callback_data": f"x:{jeton}"},
+            {"text": envoyer, "callback_data": f"x:{jeton}:{rang}"},
             depot,
             ignorer,
         ]]
@@ -616,20 +772,31 @@ def main() -> int:
         print(f"pont injoignable : {exc}")
         return 2
 
-    alias = os.environ.get("BOT_ACCOUNT", "").strip()
-    if not alias:
-        actifs = [c["alias"] for c in comptes.get("accounts", [])]
-        if not actifs:
-            print("aucun compte sur le pont")
-            return 2
-        alias = actifs[0]
+    configures = [c["alias"] for c in comptes.get("accounts", [])]
+    if not configures:
+        print("aucun compte sur le pont")
+        return 2
+
+    demande = (
+        os.environ.get("BOT_ACCOUNTS", "").strip()
+        or os.environ.get("BOT_ACCOUNT", "").strip()
+    )
+    choisis = [a.strip() for a in demande.split(",") if a.strip()]
+    # Un alias mal orthographié doit arrêter le démarrage, pas se traduire en
+    # silence par un compte de moins : c'est le genre d'erreur qu'on ne
+    # remarque que le jour où le signal n'est pas passé là où on croyait.
+    inconnus = [a for a in choisis if a not in configures]
+    if inconnus:
+        print(f"compte(s) inconnu(s) du pont : {', '.join(inconnus)}")
+        print(f"configurés : {', '.join(configures)}")
+        return 2
 
     risque = os.environ.get("BOT_RISK_PCT", "").strip()
     Bot(
         token=token,
         owner=int(owner),
         client=client,
-        compte=alias,
+        comptes=choisis or configures,
         risque=float(risque) if risque else None,
     ).run()
     return 0
