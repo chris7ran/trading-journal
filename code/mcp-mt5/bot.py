@@ -483,7 +483,13 @@ class Bot:
             if "parse entities" not in str(exc):
                 raise
             charge.pop("parse_mode")
-            charge["text"] = texte.replace("*", "").replace("_", "")
+            # Sans `parse_mode`, Telegram n'interprète plus rien : les étoiles
+            # que *nous* avons ajoutées pour l'emphase n'ont plus de sens et
+            # s'enlèvent, mais les tirets bas appartiennent aux données. Les
+            # retirer aussi transformait `schedule_plan` en « scheduleplan »
+            # et `order_send` en « ordersend » — des noms qui n'existent pas,
+            # dans le message même où on cherche ce qui a cassé.
+            charge["text"] = texte.replace("*", "")
             self._api("sendMessage", charge)
 
     def _api(self, methode: str, parametres: dict, timeout: int = 30) -> dict:
