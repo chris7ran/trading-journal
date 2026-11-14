@@ -329,12 +329,21 @@ def test_un_echec_declare_nest_pas_un_orphelin():
 
 def test_un_journal_inaccessible_leve_au_lieu_de_se_taire():
     # Pas de trace, pas d'ordre : l'appelant doit renoncer à envoyer.
-    try:
-        audit.Audit(Path("/dev/null/impossible"), "xm-demo")
-    except audit.AuditError as e:
-        assert "audit" in str(e).lower()
-    else:
-        raise AssertionError("un chemin inécrivable doit lever")
+    #
+    # Le chemin impossible se construit sous un *fichier*, parce qu'aucun
+    # système ne crée un dossier là-dedans. `/dev/null/impossible` jouait ce
+    # rôle sous Linux mais devenait `C:\dev\null\impossible` sous Windows, que
+    # la VM créait sans broncher : aucune exception, et un test en échec sur
+    # la seule machine où ce code tourne pour de vrai.
+    with tempfile.TemporaryDirectory() as tmp:
+        fichier = Path(tmp) / "pas-un-dossier"
+        fichier.write_text("", encoding="utf-8")
+        try:
+            audit.Audit(fichier / "impossible", "xm-demo")
+        except audit.AuditError as e:
+            assert "audit" in str(e).lower()
+        else:
+            raise AssertionError("un chemin inécrivable doit lever")
 
 
 def test_une_ligne_tronquee_ninvalide_pas_le_fichier():
