@@ -40,6 +40,13 @@ ORDER_TYPE_SELL_STOP = 5
 ORDER_TIME_GTC = 0
 ORDER_TIME_SPECIFIED = 2
 
+#: Masque porté par le symbole, qui dit quelles péremptions il accepte. Même
+#: piège que `filling_mode` : c'est un masque, pas une valeur de requête.
+EXPIRATION_FLAG_GTC = 1
+EXPIRATION_FLAG_DAY = 2
+EXPIRATION_FLAG_SPECIFIED = 4
+EXPIRATION_FLAG_SPECIFIED_DAY = 8
+
 #: Masque porté par le symbole.
 FILLING_FLAG_FOK = 1
 FILLING_FLAG_IOC = 2
@@ -146,6 +153,28 @@ def pending_leg(
     if tick is None or not (tick.bid and tick.ask):
         raise OrderError(f"aucune cotation pour {symbol}")
 
+    info = mt5.symbol_info(symbol)
+    if info is None:
+        raise OrderError(f"symbole illisible : {symbol}")
+    modes = getattr(info, "expiration_mode", EXPIRATION_FLAG_SPECIFIED)
+    if not modes & EXPIRATION_FLAG_SPECIFIED:
+        # Même famille de piège que `filling_mode` : le symbole dit par un
+        # masque quelles péremptions il accepte. Poser une date sur un symbole
+        # qui n'en veut pas fait rejeter l'ordre, et retomber silencieusement
+        # sur GTC poserait justement l'ordre sans péremption que la docstring
+        # ci-dessus interdit.
+        acceptes = [
+            nom for bit, nom in (
+                (EXPIRATION_FLAG_GTC, "GTC"),
+                (EXPIRATION_FLAG_DAY, "jour"),
+                (EXPIRATION_FLAG_SPECIFIED_DAY, "date du jour"),
+            ) if modes & bit
+        ]
+        raise OrderError(
+            f"{symbol} n'accepte pas d'expiration datée "
+            f"(accepte : {', '.join(acceptes) or 'rien'})"
+        )
+
     reference = tick.ask if is_long else tick.bid
     if is_long:
         order_type = ORDER_TYPE_BUY_LIMIT if entry < reference else ORDER_TYPE_BUY_STOP
@@ -163,7 +192,7 @@ def pending_leg(
         "magic": int(magic),
         "comment": comment[:31],
         "type_time": ORDER_TIME_SPECIFIED,
-        "expiration": expires_at_server,
+        "expiration": _horodatage_mt5(expires_at_server),
         "type_filling": ORDER_FILLING_RETURN,
     }
     return _send(mt5, request)
@@ -284,6 +313,25 @@ def _send(mt5: Any, request: dict) -> dict:
             f"refusé par le broker : code {result.retcode}, {result.comment}"
         )
     return payload
+
+
+def _horodatage_mt5(moment: datetime) -> int:
+    """L'expiration telle que le paquet MetaTrader5 l'accepte : un entier.
+
+    Deux erreurs se superposent ici, et la seconde ne se voit que si on
+    corrige la première.
+
+    D'abord le type. Le paquet refuse un `datetime` et rend `None` avec
+    `(-2, 'Invalid "expiration" argument')` — un refus local, jamais transmis
+    au broker. C'est ce qui a fait échouer les deux dépôts du 13/11.
+
+    Ensuite l'échelle. MT5 compte des secondes depuis 1970 **lues dans
+    l'horloge du serveur**, pas en UTC. L'heure murale du serveur doit donc
+    être encodée comme si elle était UTC. Utiliser `.timestamp()` sur un
+    `datetime` naïf ferait intervenir le fuseau de la VM, et ajouterait un
+    décalage au décalage déjà appliqué.
+    """
+    return int(moment.replace(tzinfo=timezone.utc).timestamp())
 
 
 def expiry_in_server_time(minutes: int, server_offset_seconds: int | None) -> datetime:

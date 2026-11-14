@@ -20,22 +20,45 @@ import orders
 from orders import OrderError
 
 
-class FauxMT5:
-    """Le strict nécessaire pour former et juger une requête."""
+#: Les champs que le paquet MetaTrader5 exige entiers. Un flottant ou un
+#: `datetime` y est refusé localement, sans que rien ne parte chez le broker.
+CHAMPS_ENTIERS = ("expiration", "magic", "type", "action", "type_time", "type_filling")
 
-    def __init__(self, filling_mode: int = 2, bid: float = 4110.40, ask: float = 4110.73):
+
+class FauxMT5:
+    """Le strict nécessaire pour former et juger une requête.
+
+    Ce faux **valide les types** comme le vrai paquet. Il ne le faisait pas,
+    et c'est ce qui a laissé passer le bug du 13/11 : les 31 tests validaient
+    une requête portant un `datetime` que le paquet réel refuse. Un double de
+    test plus tolérant que l'original ne teste pas l'original, il teste une
+    version plus clémente du monde.
+    """
+
+    def __init__(self, filling_mode: int = 2, bid: float = 4110.40,
+                 ask: float = 4110.73, expiration_mode: int = 15):
         self.filling_mode = filling_mode
+        self.expiration_mode = expiration_mode
         self.bid, self.ask = bid, ask
         self.envoye: list[dict] = []
         self.retcode = orders.RETCODE_DONE
+        self.erreur = (0, "")
 
     def symbol_info(self, symbol):
-        return SimpleNamespace(filling_mode=self.filling_mode)
+        return SimpleNamespace(
+            filling_mode=self.filling_mode, expiration_mode=self.expiration_mode
+        )
 
     def symbol_info_tick(self, symbol):
         return SimpleNamespace(bid=self.bid, ask=self.ask)
 
     def order_send(self, request):
+        for champ in CHAMPS_ENTIERS:
+            if champ in request and not isinstance(request[champ], int):
+                # Exactement ce que rend le vrai paquet : rien, et une erreur
+                # à relire avec last_error().
+                self.erreur = (-2, f'Invalid "{champ}" argument')
+                return None
         self.envoye.append(request)
         return SimpleNamespace(
             retcode=self.retcode, comment="ok", order=1, deal=2,
@@ -49,7 +72,7 @@ class FauxMT5:
         )
 
     def last_error(self):
-        return (0, "")
+        return self.erreur
 
 
 def jambe(mt5, **kwargs):
@@ -187,7 +210,40 @@ def test_une_expiration_est_toujours_posee():
     en_attente(mt5, entry=4108.00)
     envoi = mt5.envoye[0]
     assert envoi["type_time"] == orders.ORDER_TIME_SPECIFIED
-    assert envoi["expiration"] == datetime(2026, 11, 9, 9, 0, 0)
+    assert envoi["expiration"] == orders._horodatage_mt5(datetime(2026, 11, 9, 9, 0, 0))
+
+
+def test_lexpiration_part_en_entier_pas_en_datetime():
+    # Le bug du 13/11 : le paquet MetaTrader5 refuse un `datetime` sans rien
+    # envoyer, et rend (-2, 'Invalid "expiration" argument'). Les deux dépôts
+    # de la séance ont échoué là, après un chiffrage pourtant correct.
+    mt5 = FauxMT5()
+    en_attente(mt5, entry=4108.00)
+    assert isinstance(mt5.envoye[0]["expiration"], int)
+
+
+def test_lheure_serveur_est_encodee_comme_si_elle_etait_utc():
+    # MT5 compte des secondes depuis 1970 lues dans l'horloge du serveur.
+    # Passer par le fuseau de la machine ajouterait un décalage au décalage.
+    horodatage = orders._horodatage_mt5(datetime(2026, 11, 9, 9, 0, 0))
+    assert horodatage == int(
+        datetime(2026, 11, 9, 9, 0, 0, tzinfo=timezone.utc).timestamp()
+    )
+
+
+def test_un_symbole_sans_expiration_datee_est_refuse_clairement():
+    # Le symbole dit par un masque ce qu'il accepte. Retomber sur GTC
+    # poserait un ordre sans péremption — le piège que l'expiration existe
+    # précisément pour éviter.
+    mt5 = FauxMT5(expiration_mode=orders.EXPIRATION_FLAG_GTC)
+    try:
+        en_attente(mt5, entry=4108.00)
+    except OrderError as e:
+        assert "expiration datée" in str(e)
+        assert "GTC" in str(e)
+    else:
+        raise AssertionError("un symbole sans expiration datée doit être refusé")
+    assert not mt5.envoye
 
 
 def test_lexpiration_est_convertie_en_heure_serveur():
