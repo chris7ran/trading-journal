@@ -85,6 +85,9 @@ class Account:
     r_green: float = DEFAULT_R_GREEN
     #: R moyen pondéré en dessous duquel on refuse, sans dérogation.
     r_red: float = DEFAULT_R_RED
+    #: Niveau d'équité sous lequel le compte est perdu, recopié de la prop
+    #: firm. Absent pour un compte qui n'en a pas.
+    equity_floor: float | None = None
 
     # --- Exécution ----------------------------------------------------------
 
@@ -209,6 +212,10 @@ def _parse_account(entry: dict, index: int, path: Path) -> Account:
     r_green = _positive(limits, "r_green", DEFAULT_R_GREEN, where)
     r_red = _positive(limits, "r_red", DEFAULT_R_RED, where)
 
+    equity_floor = None
+    if "equity_floor" in limits:
+        equity_floor = _positive(limits, "equity_floor", 0.0, where)
+
     if r_red > r_green:
         raise ConfigError(
             f"{where} : r_red ({r_red}) au-dessus de r_green ({r_green}) — "
@@ -262,6 +269,7 @@ def _parse_account(entry: dict, index: int, path: Path) -> Account:
         max_open_plans=max_open_plans,
         r_green=r_green,
         r_red=r_red,
+        equity_floor=equity_floor,
         execution_enabled=execution_enabled,
         audit_dir=Path(audit_dir) if audit_dir else None,
         expiry_minutes=expiry_minutes,

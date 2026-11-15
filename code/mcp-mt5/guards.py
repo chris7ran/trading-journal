@@ -42,6 +42,19 @@ class Limits:
     daily_loss_pct_max: float = 0.02
     #: Plans — not positions. One plan is several legs.
     max_open_plans: int = 1
+    #: Niveau d'équité sous lequel le compte est mort, en devise du compte.
+    #: C'est le « Max Drawdown Level » d'une prop firm, recopié tel qu'elle
+    #: l'affiche. `None` pour un compte qui n'en a pas.
+    #:
+    #: Une valeur plutôt qu'un pourcentage, parce qu'une prop firm le calcule
+    #: comme elle l'entend — fixe sous le solde initial, glissant sous un pic
+    #: d'équité, figé en fin de journée. Recopier le nombre qu'elle affiche
+    #: évite de réimplémenter une règle qu'on ne connaît qu'à moitié.
+    #:
+    #: Et si ce plancher est glissant, il ne peut que monter : une valeur
+    #: oubliée depuis des semaines refusera donc trop tôt, jamais trop tard.
+    #: L'oubli coûte une occasion, pas un compte.
+    equity_floor: float | None = None
 
 
 @dataclass(frozen=True)
@@ -150,6 +163,7 @@ def check(
     _ratio(verdict, sized)
     _risk(verdict, sized, limits, state)
     _daily(verdict, sized, limits, state)
+    _floor(verdict, sized, limits, state)
     _concurrency(verdict, limits, state)
     _margin(verdict, state, margin_required)
     _prop(verdict, sized, prop)
@@ -241,6 +255,56 @@ def _daily(
         verdict.warn(
             "daily_close",
             f"{lost / allowance:.0%} de l'enveloppe journalière déjà consommée",
+        )
+
+
+#: En dessous de ce nombre de pertes pleines encore encaissables avant le
+#: plancher, on le dit. Trois est le seuil où la marge cesse d'être une marge :
+#: une seule série ordinaire suffit à la traverser.
+PERTES_AVANT_ALERTE = 3.0
+
+
+def _floor(
+    verdict: Verdict, sized: SizedPlan, limits: Limits, state: AccountState
+) -> None:
+    """Le plancher qui tue le compte, et non celui qui ferme la journée.
+
+    L'enveloppe journalière se reconstitue le lendemain ; ce plancher-là, non.
+    C'est la seule limite dont le franchissement est définitif, et jusqu'ici
+    le pont ne la connaissait pas — un compte sans limite journalière n'était
+    donc surveillé que par le risque d'un plan isolé.
+
+    La mesure est en équité, comme chez la firme : une position ouverte en
+    perte latente a déjà rapproché du plancher, même si rien n'est soldé.
+    """
+    floor = limits.equity_floor
+    if floor is None or floor <= 0:
+        return
+
+    marge = state.equity - floor
+    if marge <= EPSILON:
+        verdict.block(
+            "floor_breached",
+            f"équité {state.equity:,.0f} {state.currency} au niveau du plancher "
+            f"({floor:,.0f}) : le compte est perdu, plus rien ne doit partir",
+        )
+        return
+
+    if sized.risk_amount >= marge - EPSILON:
+        verdict.block(
+            "floor_would_breach",
+            f"ce plan risque {sized.risk_amount:,.0f} {state.currency} pour "
+            f"{marge:,.0f} seulement avant le plancher de {floor:,.0f} : "
+            f"un seul stop suffirait à tuer le compte",
+        )
+        return
+
+    restantes = marge / sized.risk_amount
+    if restantes < PERTES_AVANT_ALERTE:
+        verdict.warn(
+            "floor_close",
+            f"{marge:,.0f} {state.currency} avant le plancher, soit "
+            f"{restantes:.1f} pertes pleines",
         )
 
 

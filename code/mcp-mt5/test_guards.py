@@ -201,6 +201,60 @@ def test_le_realise_et_le_flottant_sadditionnent():
     assert v.blocked
 
 
+def test_un_plancher_absent_ne_bloque_rien():
+    # Le cas du compte broker ordinaire, qui n'a pas de drawdown maximum.
+    assert LIMITS.equity_floor is None
+    assert not check().blocked
+
+
+def test_un_plan_qui_toucherait_le_plancher_est_refuse():
+    # Compte à 92 500 pour un plancher à 92 000 : 500 de marge, et le plan
+    # en risque 1 000. L'enveloppe du jour, elle, serait encore ouverte —
+    # c'est tout l'intérêt d'avoir les deux.
+    l = Limits(risk_pct_max=0.01, daily_loss_pct_max=0.02, max_open_plans=1,
+               equity_floor=92_000.0)
+    v = check(limits=l, state=state(balance=92_500.0))
+    assert v.blocked
+    assert "floor_would_breach" in codes(v)
+
+
+def test_un_compte_deja_sous_le_plancher_nenvoie_plus_rien():
+    l = Limits(risk_pct_max=0.01, daily_loss_pct_max=0.02, max_open_plans=1,
+               equity_floor=92_000.0)
+    v = check(limits=l, state=state(balance=91_800.0))
+    assert v.blocked
+    assert "floor_breached" in codes(v)
+
+
+def test_une_marge_de_moins_de_trois_pertes_avertit():
+    # 2 500 de marge pour un risque de 1 000 : deux pertes et demie. Ça passe,
+    # mais il faut le dire — une série ordinaire traverse cette distance.
+    l = Limits(risk_pct_max=0.01, daily_loss_pct_max=0.50, max_open_plans=1,
+               equity_floor=92_000.0)
+    v = check(limits=l, state=state(balance=94_500.0))
+    assert not v.blocked, [f.message for f in v.findings]
+    assert "floor_close" in codes(v)
+
+
+def test_une_marge_confortable_ne_dit_rien():
+    l = Limits(risk_pct_max=0.01, daily_loss_pct_max=0.02, max_open_plans=1,
+               equity_floor=92_000.0)
+    v = check(limits=l, state=state())
+    assert not v.blocked
+    assert "floor_close" not in codes(v)
+
+
+def test_le_plancher_se_mesure_en_equite_donc_flottant_compris():
+    # Solde encore à 95 000, mais 2 800 de perte latente : la firme compte
+    # 92 200, et il ne reste pas de quoi encaisser un stop de 1 000.
+    l = Limits(risk_pct_max=0.01, daily_loss_pct_max=0.50, max_open_plans=1,
+               equity_floor=92_000.0)
+    v = check(limits=l, state=state(balance=95_000.0, equity=92_200.0,
+                                    open_positions=1))
+    assert v.blocked
+    assert "floor_would_breach" in codes(v)
+
+
 def test_un_gain_latent_nagrandit_pas_lenveloppe():
     # L'équité au-dessus de l'ouverture ne crée pas de marge supplémentaire :
     # un profit non encaissé peut disparaître avant d'être réalisé.

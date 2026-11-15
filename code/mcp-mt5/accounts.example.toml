@@ -88,6 +88,22 @@ r_green = 0.70
 # 0,416 R : en dessous, prendre le trade perd de l'argent en moyenne.
 r_red = 0.45
 
+# Niveau d'équité sous lequel le compte est perdu, en devise du compte. Chez
+# une prop firm, c'est le « Max Drawdown Level » affiché sur le tableau de
+# bord : recopiez le nombre tel quel. Absent pour un compte qui n'a pas de
+# drawdown maximum — un compte broker ordinaire, typiquement.
+#
+# Une valeur et non un pourcentage, parce que chaque firme le calcule à sa
+# façon : fixe sous le solde initial, glissant sous un pic d'équité, figé en
+# fin de journée. Recopier ce qu'elle affiche évite de réimplémenter une règle
+# qu'on ne connaît qu'à moitié, et de diverger sans le voir.
+#
+# Si le plancher est glissant, il ne peut que monter. Une valeur oubliée
+# depuis des semaines refusera donc trop tôt, jamais trop tard : l'oubli coûte
+# une occasion manquée, pas un compte.
+#
+# equity_floor = 92000.0
+
 # Exécution. Éteinte par défaut, et tant qu'elle l'est le processus qui pilote
 # ce terminal n'importe même pas le module d'envoi : la capacité n'existe pas,
 # au lieu d'exister et d'être refusée.

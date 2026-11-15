@@ -566,6 +566,7 @@ async def _assess(
         risk_pct_max=compte.risk_pct_max,
         daily_loss_pct_max=compte.daily_loss_pct_max,
         max_open_plans=compte.max_open_plans,
+        equity_floor=compte.equity_floor,
     )
     broker_symbol = compte.to_broker(symbol)
 
@@ -694,12 +695,20 @@ async def _assess(
             # laisserait croire à une incohérence du pont.
             "daily_drawdown": round(
                 max(0.0, (info["balance"] - day["realised_pnl"]) - info["equity"]), 2),
+            # Ce qui reste avant le plancher définitif, quand il est déclaré.
+            # Le chiffre qui compte vraiment sur un compte prop firm : celui
+            # de l'enveloppe du jour se reconstitue demain, celui-ci non.
+            "floor_distance": (
+                round(info["equity"] - limits.equity_floor, 2)
+                if limits.equity_floor else None
+            ),
         },
         "limits": {
             "risk_pct_max": limits.risk_pct_max,
             "daily_loss_pct_max": limits.daily_loss_pct_max,
             "max_open_plans": limits.max_open_plans,
             "r_green": compte.r_green, "r_red": compte.r_red,
+            "equity_floor": limits.equity_floor,
         },
     }
 
