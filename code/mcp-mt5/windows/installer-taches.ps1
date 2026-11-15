@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Déclare les deux tâches planifiées qui démarrent le pont et le bot.
 

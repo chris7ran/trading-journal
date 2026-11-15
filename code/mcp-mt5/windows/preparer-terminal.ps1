@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Prépare un ou plusieurs dossiers de terminal MT5 portables, à partir d'un
     terminal existant.
@@ -54,7 +54,7 @@ $ErrorActionPreference = "Stop"
 
 $executable = Join-Path $Source "terminal64.exe"
 if (-not (Test-Path $executable)) {
-    throw "terminal64.exe introuvable dans $Source — indiquez un terminal existant avec -Source"
+    throw "terminal64.exe introuvable dans $Source - indiquez un terminal existant avec -Source"
 }
 
 #: Dossiers d'état, inutiles dans une copie neuve et parfois énormes.
@@ -71,7 +71,7 @@ foreach ($nom in $Alias) {
     if ((Test-Path $cible) -and -not $Force) {
         $contenu = Get-ChildItem $cible -Force -ErrorAction SilentlyContinue
         if ($contenu) {
-            Write-Warning "$cible existe deja et n'est pas vide — ignore (utilisez -Force pour ecraser)"
+            Write-Warning "$cible existe deja et n'est pas vide - ignore (utilisez -Force pour ecraser)"
             continue
         }
     }

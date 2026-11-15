@@ -465,6 +465,14 @@ L'alternative, si tu préfères ne rien automatiser : ouvrir la session à la ma
 après chaque redémarrage. Les tâches prendront le relais à ce moment-là, et
 c'est déjà beaucoup mieux que de se souvenir de deux lignes de commande.
 
+### Si vous modifiez ces scripts
+
+Gardez-les en **UTF-8 avec BOM**. PowerShell 5.1 lit un `.ps1` sans BOM comme
+du cp1252, et les octets d'un caractère accenté s'y relisent autrement : le
+troisième octet d'un tiret cadratin devient un guillemet fermant typographique,
+que PowerShell accepte comme vraie fin de chaîne. Le script casse alors loin du
+caractère fautif, sur un message incompréhensible.
+
 ### Un effet de bord utile
 
 Une tâche planifiée relit l'environnement utilisateur à chaque lancement. Elle

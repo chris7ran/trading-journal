@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Lance un composant du pont, le surveille, et le relance s'il s'arrête.
 
