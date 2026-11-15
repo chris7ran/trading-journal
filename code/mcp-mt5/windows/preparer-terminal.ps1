@@ -52,6 +52,23 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# `powershell -File script.ps1 -Alias a,b` passe « a,b » comme une seule
+# chaine : avec -File, rien n'est evalue, donc la virgule ne construit pas de
+# tableau. Le script creait alors un dossier nomme « a,b ». Plutot que de
+# documenter la bonne facon d'appeler, on accepte les deux : on recoupe nous
+# memes sur les virgules. Une interface qui ne se laisse pas mal appeler vaut
+# mieux qu'une note dans un README.
+$Alias = $Alias |
+    ForEach-Object { $_ -split ',' } |
+    ForEach-Object { $_.Trim() } |
+    Where-Object { $_ }
+
+foreach ($nom in $Alias) {
+    if ($nom -notmatch '^[A-Za-z0-9._-]+$') {
+        throw "alias invalide : '$nom' - lettres, chiffres, point, tiret et souligne uniquement"
+    }
+}
+
 if (-not (Test-Path $Source -PathType Container)) {
     # Le cas le plus frequent n'est pas un mauvais -Source, c'est un appel
     # mal decoupe : avec `powershell -File`, les arguments sont separes sur
