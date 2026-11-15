@@ -52,6 +52,17 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+if (-not (Test-Path $Source -PathType Container)) {
+    # Le cas le plus frequent n'est pas un mauvais -Source, c'est un appel
+    # mal decoupe : avec `powershell -File`, les arguments sont separes sur
+    # les espaces et la virgule ne construit pas de tableau. Un alias ecrit
+    # `-Alias a, b` devient alors `-Alias "a,"` suivi de `b` en positionnel,
+    # donc en -Source. Le message doit le dire, sinon on cherche un chemin.
+    throw ("dossier introuvable : $Source`n" +
+           "Si vous passiez plusieurs alias avec -File, separez-les par une " +
+           "virgule SANS espace : -Alias a,b")
+}
+
 $executable = Join-Path $Source "terminal64.exe"
 if (-not (Test-Path $executable)) {
     throw "terminal64.exe introuvable dans $Source - indiquez un terminal existant avec -Source"
