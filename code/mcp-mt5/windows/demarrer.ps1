@@ -46,6 +46,13 @@ if (-not (Test-Path $cible)) {
 $journaux = Join-Path $env:LOCALAPPDATA "mcp-mt5"
 New-Item -ItemType Directory -Force -Path $journaux | Out-Null
 
+# Redirigé vers un fichier, Python retombe sur l'encodage local de Windows —
+# cp1252 ici — tandis que les lignes du lanceur partent en UTF-8. Le fichier
+# mélangerait alors deux encodages, et les accents deviendraient illisibles
+# précisément là où on vient lire un message d'erreur.
+$env:PYTHONIOENCODING = "utf-8"
+$env:PYTHONUTF8 = "1"
+
 # Le nom se recalcule à chaque écriture : un processus qui tourne plusieurs
 # jours doit changer de fichier à minuit, pas écrire indéfiniment dans celui
 # du jour où il a démarré.
