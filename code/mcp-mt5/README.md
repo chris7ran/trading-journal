@@ -224,6 +224,24 @@ Un cas mérite attention : quand le prix est passé de l'autre côté de l'entr�
 proche. Le plan le signale, parce qu'un chiffre flatteur est le plus dangereux
 au moment précis où le scénario se dégrade.
 
+### Deux plafonds, et un plancher
+
+L'enveloppe journalière et le plancher du compte ne jouent pas le même rôle,
+et c'est pour ça qu'ils coexistent.
+
+L'**enveloppe du jour** vaut `daily_loss_pct_max` du solde d'ouverture. Elle se
+mesure entre ce solde et l'**équité courante**, donc elle compte le réalisé et
+le latent ensemble : une position ouverte en perte a déjà consommé sa part,
+qu'on l'ait soldée ou non. Un plafond qui ignorerait le flottant serait un
+plafond qu'on franchit pendant qu'il affiche « tout va bien ». Elle se
+reconstitue le lendemain.
+
+Le **plancher** — `equity_floor`, facultatif — est le niveau d'équité sous
+lequel le compte est perdu. Celui-là ne se reconstitue pas. Un plan dont le
+stop amènerait l'équité en dessous est refusé, et une marge inférieure à trois
+pertes pleines déclenche un avertissement. Sur un compte prop firm sans limite
+journalière, c'est la seule limite qui compte réellement.
+
 ### Deux niveaux d'avertissement
 
 Un avertissement qui se déclenche sur tous les plans finit par ne plus être
