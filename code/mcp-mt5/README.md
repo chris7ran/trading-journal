@@ -396,6 +396,64 @@ n'a pas de plan n'a pas de bouton. Chaque compte garde ses propres garde-fous
 et **il n'existe aucun plafond agrégé** : servir deux comptes ouvre deux
 positions, et le risque s'additionne.
 
+## Démarrage automatique
+
+Tant que le pont et le bot se lancent à la main, un redémarrage de la VM laisse
+un système **silencieux** — et un système silencieux ressemble exactement à un
+système qui n'a rien à dire. Deux tâches planifiées règlent ça :
+
+```powershell
+powershell -ExecutionPolicy Bypass -File windows\installer-taches.ps1
+```
+
+À lancer une fois, dans un PowerShell administrateur, depuis la VM. Le script
+est réentrant : le relancer remplace les tâches au lieu d'en ajouter.
+
+Chaque tâche appelle `windows\demarrer.ps1`, qui lance son composant, écrit
+tous ses flux dans un fichier daté sous `%LOCALAPPDATA%\mcp-mt5\`, et le relance
+s'il s'arrête. L'attente double à chaque mort immédiate, jusqu'à cinq minutes :
+un processus qui échoue en deux secondes a un problème de configuration, et le
+marteler ne ferait que remplir le disque. L'ordre de démarrage n'a donc pas
+d'importance — le bot refuse de vivre sans le pont, et réessaiera jusqu'à ce
+qu'il réponde.
+
+| Commande | Effet |
+|---|---|
+| `Start-ScheduledTask -TaskName mcp-mt5-pont` | démarrer sans attendre une session |
+| `Stop-ScheduledTask -TaskName mcp-mt5-bot, mcp-mt5-pont` | arrêter les lanceurs |
+| `Get-Content "$env:LOCALAPPDATA\mcp-mt5\server-$(Get-Date -f yyyy-MM-dd).log" -Tail 30 -Wait` | suivre le pont en direct |
+
+Arrêter les tâches ne tue pas les processus Python déjà lancés : il faut les
+terminer séparément, sans quoi le lanceur relancé en trouvera deux.
+
+### Ouverture de session automatique
+
+Les tâches se déclenchent à **l'ouverture de session**, pas au démarrage de la
+machine. C'est imposé par MetaTrader 5 : son terminal est une application
+graphique et n'a pas de bureau dans la session des services. Un redémarrage ne
+remet donc le système en route que si la session s'ouvre seule.
+
+L'activer est un arbitrage, pas une évidence. Une session ouverte en permanence
+signifie qu'un accès à la console de l'hyperviseur donne un bureau déverrouillé,
+sans mot de passe. Sur une machine qui détient les jetons et peut passer des
+ordres, ça mérite d'être pesé plutôt que subi.
+
+Si tu l'actives, utilise **Autologon** de Sysinternals plutôt que les clés de
+registre `DefaultUserName` / `DefaultPassword` : la méthode par registre écrit
+le mot de passe en clair, lisible par n'importe quel compte de la machine,
+tandis qu'Autologon le range dans les secrets LSA.
+
+L'alternative, si tu préfères ne rien automatiser : ouvrir la session à la main
+après chaque redémarrage. Les tâches prendront le relais à ce moment-là, et
+c'est déjà beaucoup mieux que de se souvenir de deux lignes de commande.
+
+### Un effet de bord utile
+
+Une tâche planifiée relit l'environnement utilisateur à chaque lancement. Elle
+voit donc toujours la valeur à jour de `TELEGRAM_BOT_TOKEN`, là où une fenêtre
+PowerShell ouverte avant une modification garde l'ancienne indéfiniment — un
+piège qui se paie en `401 Unauthorized` incompréhensibles.
+
 ## Tests
 
 Le dimensionnement et les garde-fous ne dépendent ni de MT5 ni du réseau, donc
