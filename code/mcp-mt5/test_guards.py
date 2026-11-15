@@ -29,7 +29,6 @@ def sized(**kwargs):
 
 def state(**kwargs):
     base = dict(
-        equity=100_000.0,
         balance=100_000.0,
         currency="USD",
         margin_free=90_000.0,
@@ -38,6 +37,11 @@ def state(**kwargs):
         open_positions=0,
     )
     base.update(kwargs)
+    # Sans flottant déclaré, l'équité suit le solde. Les laisser diverger par
+    # défaut décrirait un compte impossible — un solde entamé et une équité
+    # intacte sans la moindre position ouverte — et les tests du jour
+    # mesureraient alors autre chose que ce qu'ils annoncent.
+    base.setdefault("equity", base["balance"])
     return AccountState(**base)
 
 
@@ -164,6 +168,46 @@ def test_une_journee_gagnante_ne_consomme_rien():
     v = check(state=state(balance=103_000.0, today_realised_pnl=3_000.0))
     assert not v.blocked
     assert "daily_close" not in codes(v)
+
+
+# --- Le flottant compte autant que le réalisé --------------------------------
+
+
+def test_une_perte_latente_consomme_lenveloppe_du_jour():
+    # Rien n'est encaissé, mais l'équité est à 1 800 sous l'ouverture. Chez
+    # une prop firm le dépassement se constate sur l'équité : une position
+    # ouverte en perte a déjà mangé l'enveloppe, qu'on l'ait soldée ou non.
+    s = state(balance=100_000.0, equity=98_200.0, open_positions=1)
+    assert s.daily_drawdown == 1_800.0
+    v = check(state=s)
+    assert v.blocked
+    assert "daily_would_breach" in codes(v)
+
+
+def test_une_perte_latente_suffisante_ferme_la_journee():
+    v = check(state=state(balance=100_000.0, equity=98_000.0, open_positions=1))
+    assert v.blocked
+    assert "daily_spent" in codes(v)
+
+
+def test_le_realise_et_le_flottant_sadditionnent():
+    # 1 200 encaissés et 700 latents : 1 900 de recul sur une enveloppe de
+    # 2 000. Chacun pris isolément laisserait croire qu'il reste de la place.
+    s = state(balance=98_800.0, equity=98_100.0, today_realised_pnl=-1_200.0,
+              open_positions=1)
+    assert s.opening_balance == 100_000.0
+    assert s.daily_drawdown == 1_900.0
+    v = check(state=s)
+    assert v.blocked
+
+
+def test_un_gain_latent_nagrandit_pas_lenveloppe():
+    # L'équité au-dessus de l'ouverture ne crée pas de marge supplémentaire :
+    # un profit non encaissé peut disparaître avant d'être réalisé.
+    s = state(balance=100_000.0, equity=101_500.0, open_positions=1)
+    assert s.daily_drawdown == 0.0
+    v = check(state=s)
+    assert not v.blocked
 
 
 # --- Plans simultanés --------------------------------------------------------

@@ -689,6 +689,11 @@ async def _assess(
             "pending_orders": day.get("pending_orders", 0),
             "daily_allowance": round(
                 (info["balance"] - day["realised_pnl"]) * limits.daily_loss_pct_max, 2),
+            # Ce que le garde-fou mesure réellement : réalisé *et* latent.
+            # Afficher `realised_today` seul à côté d'un refus pour dépassement
+            # laisserait croire à une incohérence du pont.
+            "daily_drawdown": round(
+                max(0.0, (info["balance"] - day["realised_pnl"]) - info["equity"]), 2),
         },
         "limits": {
             "risk_pct_max": limits.risk_pct_max,

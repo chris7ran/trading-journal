@@ -74,6 +74,22 @@ class AccountState:
         """
         return self.balance - self.today_realised_pnl
 
+    @property
+    def daily_drawdown(self) -> float:
+        """Recul depuis l'ouverture du jour, **flottant compris**.
+
+        Le réalisé seul ne suffit pas. Une limite journalière qui ignore les
+        positions ouvertes est une limite qu'on peut franchir pendant qu'elle
+        affiche « tout va bien » : chez une prop firm, le dépassement se
+        constate sur l'équité, à l'instant où elle touche le plancher, et une
+        perte latente y pèse autant qu'une perte encaissée.
+
+        Mesurer l'écart entre le solde d'ouverture et l'équité courante capte
+        les deux d'un coup, sans rien demander de plus au terminal. Zéro quand
+        la journée est en avance, puisqu'un gain n'agrandit pas l'enveloppe.
+        """
+        return max(0.0, self.opening_balance - self.equity)
+
 
 @dataclass
 class Finding:
@@ -200,12 +216,13 @@ def _daily(
     if allowance <= 0:
         return
 
-    lost = max(0.0, -state.today_realised_pnl)
+    lost = state.daily_drawdown
     if lost >= allowance - EPSILON:
         verdict.block(
             "daily_spent",
-            f"{lost:,.0f} {state.currency} perdus aujourd'hui sur une enveloppe "
-            f"de {allowance:,.0f} : la journée est terminée",
+            f"{lost:,.0f} {state.currency} de recul depuis l'ouverture du jour, "
+            f"flottant compris, sur une enveloppe de {allowance:,.0f} : "
+            f"la journée est terminée",
         )
         return
 
@@ -217,8 +234,8 @@ def _daily(
         verdict.block(
             "daily_would_breach",
             f"ce plan risque {sized.risk_amount:,.0f} {state.currency} ; ajouté aux "
-            f"{lost:,.0f} déjà perdus il dépasserait l'enveloppe du jour "
-            f"({allowance:,.0f})",
+            f"{lost:,.0f} de recul déjà pris (flottant compris) il dépasserait "
+            f"l'enveloppe du jour ({allowance:,.0f})",
         )
     elif lost >= allowance * WARN_AT:
         verdict.warn(
