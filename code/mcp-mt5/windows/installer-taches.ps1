@@ -84,5 +84,5 @@ Write-Host '  Start-ScheduledTask -TaskName mcp-mt5-pont'
 Write-Host '  Start-ScheduledTask -TaskName mcp-mt5-bot'
 Write-Host ""
 Write-Host "Arreter les lanceurs, puis les processus qu'ils ont laisses :"
-Write-Host '  Stop-ScheduledTask -TaskName mcp-mt5-bot, mcp-mt5-pont'
+Write-Host '  Get-ScheduledTask -TaskName mcp-mt5-* | Stop-ScheduledTask'
 Write-Host '  Get-CimInstance Win32_Process -Filter "Name like ''py%''" | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }'

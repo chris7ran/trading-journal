@@ -420,7 +420,7 @@ qu'il réponde.
 | Commande | Effet |
 |---|---|
 | `Start-ScheduledTask -TaskName mcp-mt5-pont` | démarrer sans attendre une session |
-| `Stop-ScheduledTask -TaskName mcp-mt5-bot, mcp-mt5-pont` | arrêter les lanceurs |
+| `Get-ScheduledTask -TaskName mcp-mt5-* \| Stop-ScheduledTask` | arrêter les lanceurs |
 | `Get-Content "$env:LOCALAPPDATA\mcp-mt5\server-$(Get-Date -f yyyy-MM-dd).log" -Tail 30 -Wait` | suivre le pont en direct |
 
 Arrêter les tâches ne tue pas les processus Python déjà lancés : il faut les
