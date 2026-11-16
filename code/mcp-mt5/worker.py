@@ -225,6 +225,29 @@ def _server_offset(state: _State) -> int | None:
         if time.time() - state.offset_measured_at < 60:
             return state.offset
 
+    mesure, _ = _mesurer_offset(state)
+    if mesure is None:
+        return state.offset
+    state.offset = mesure
+    state.offset_measured_at = time.time()
+    return state.offset
+
+
+#: Pause avant la seconde tentative d'un démarrage à froid. Mis à zéro par les
+#: tests, qui n'ont pas de terminal à attendre.
+PAUSE_HISTORIQUE_SECONDS = 1.5
+
+
+def _mesurer_offset(state: _State) -> tuple[int | None, list[dict]]:
+    """Interroger les symboles, et rendre le décalage **avec** son échantillon.
+
+    Les deux sont rendus ensemble parce qu'ils doivent provenir du même
+    relevé. Mesurer d'un côté et échantillonner de l'autre produisait un
+    rapport qui se contredisait : le 16/11 au démarrage, `get_clock` a affiché
+    onze symboles cotant tous à UTC+2 sous la mention « aucun symbole ne
+    cote ». Deux relevés successifs, le premier tombé dans la fenêtre où le
+    terminal n'avait pas encore téléchargé son historique.
+
     # Tous les candidats sont interrogés, et c'est **le plus grand écart** qui
     # gagne — pas le premier qui répond.
     #
@@ -236,24 +259,47 @@ def _server_offset(state: _State) -> int | None:
     # une bougie de la veille et la mesure est sortie à UTC+1,5 au lieu de
     # UTC+2. Le maximum est l'échantillon le moins périmé, et il suffit qu'un
     # seul symbole cote pour qu'il soit juste.
+    """
+    meilleur, echantillon = _relever(state)
+
+    # Démarrage à froid : un terminal qui vient de se lancer n'a pas encore
+    # téléchargé son historique, et `copy_rates_from_pos` rend du vide sur
+    # tous les symboles à la fois. L'appel suivant, lui, aura les données —
+    # c'est l'interrogation qui déclenche le téléchargement. Une seconde
+    # tentative évite que le premier `get_clock` après un démarrage réponde
+    # « pas de mesure » alors que tout va bien.
+    if not echantillon:
+        if PAUSE_HISTORIQUE_SECONDS:
+            time.sleep(PAUSE_HISTORIQUE_SECONDS)
+        meilleur, echantillon = _relever(state)
+
+    if meilleur is None:
+        return None, echantillon
+    return (
+        int(round(meilleur / OFFSET_GRID_SECONDS) * OFFSET_GRID_SECONDS),
+        echantillon,
+    )
+
+
+def _relever(state: _State) -> tuple[int | None, list[dict]]:
+    """Un passage sur les symboles candidats, sans interprétation."""
     mt5 = state.mt5
+    maintenant = int(time.time())
     meilleur = None
+    echantillon = []
+
     for symbol in _candidate_symbols(state):
         rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 0, 1)
         if rates is None or len(rates) == 0:
             continue
-        difference = int(rates[0]["time"]) - int(time.time())
+        difference = int(rates[0]["time"]) - maintenant
+        echantillon.append({"symbol": symbol, "offset_seconds": difference})
         if abs(difference) > MAX_PLAUSIBLE_OFFSET_SECONDS:
             continue  # bougie trop vieille pour être un décalage
         if meilleur is None or difference > meilleur:
             meilleur = difference
 
-    if meilleur is None:
-        return state.offset
-
-    state.offset = int(round(meilleur / OFFSET_GRID_SECONDS) * OFFSET_GRID_SECONDS)
-    state.offset_measured_at = time.time()
-    return state.offset
+    return meilleur, echantillon
 
 
 #: Plafond du nombre de symboles interrogés pour la mesure d'horloge. Assez
@@ -657,23 +703,24 @@ def _clock(state: _State) -> dict:
     exactement à un chiffre juste — c'est ce qui s'est passé le 09/11, où le
     GER40 avant son ouverture a tiré la mesure à UTC+1,5.
     """
-    offset = _server_offset(state)
-    mt5 = state.mt5
-    maintenant = int(time.time())
+    offset, echantillon = _mesurer_offset(state)
+    if offset is not None:
+        state.offset = offset
+        state.offset_measured_at = time.time()
+    else:
+        # Rien de frais maintenant, mais une mesure antérieure reste valable :
+        # un décalage de broker ne bouge que deux fois par an.
+        offset = state.offset
 
-    echantillon = []
-    for symbol in _candidate_symbols(state):
-        rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 0, 1)
-        if rates is None or len(rates) == 0:
-            continue
-        ecart = int(rates[0]["time"]) - maintenant
-        echantillon.append({
-            "symbol": symbol,
-            "offset_seconds": ecart,
+    echantillon = [
+        {
+            **s,
             # L'ancienneté se déduit une fois le décalage retenu : c'est
             # l'écart entre ce que ce symbole dit et ce que dit le plus frais.
-            "stale_seconds": None if offset is None else offset - ecart,
-        })
+            "stale_seconds": None if offset is None else offset - s["offset_seconds"],
+        }
+        for s in echantillon
+    ]
 
     return {
         "utc_now": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"),
@@ -685,7 +732,7 @@ def _clock(state: _State) -> dict:
             "retenu : l'écart le plus grand de l'échantillon, donc le symbole "
             "le moins périmé"
             if offset is not None
-            else "aucun symbole ne cote et aucune mesure en cache : les "
+            else "aucune bougie lisible et aucune mesure en cache : les "
                  "horodatages sont en heure serveur"
         ),
     }
