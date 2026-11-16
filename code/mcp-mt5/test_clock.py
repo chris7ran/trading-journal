@@ -1,11 +1,15 @@
-"""Tests de la mesure d'horloge, sans terminal.
+"""Tests de la mesure d'horloge et des premiers relevés, sans terminal.
 
     py -3.12 test_clock.py
 
-Deux bugs sont déjà passés par ici : un symbole périmé qui tire la mesure à
-UTC+1,5, et un rapport qui annonçait « aucun symbole ne cote » en affichant
-onze symboles cotants. Les deux avaient la même cause profonde — une mesure
-dont on ne voit pas d'où elle sort — et les deux se reproduisent ici.
+Trois bugs sont déjà passés par ici : un symbole périmé qui tire la mesure à
+UTC+1,5, un rapport qui annonçait « aucun symbole ne cote » en affichant onze
+symboles cotants, et un premier chiffrage refusé pour « marché fermé » sur un
+symbole qui venait d'être abonné.
+
+Ils ont tous la même racine : un terminal qui vient de démarrer, ou un symbole
+qu'on vient d'ajouter, répond du vide avant de répondre juste. Les trois se
+reproduisent ici.
 """
 
 from __future__ import annotations
@@ -177,6 +181,62 @@ def test_une_mesure_en_cache_survit_a_la_fermeture_du_marche():
     rapport = worker._clock(e)
     assert rapport["server_utc_offset_seconds"] == 7200
     assert rapport["measured"] is True
+
+
+# --- Le premier tick d'un symbole fraîchement abonné ----------------------------
+
+worker.PAUSE_COTATION_SECONDS = 0  # pas de serveur à attendre non plus
+
+
+class FauxTicks:
+    """Rend un tick vide au premier appel, puis un vrai prix."""
+
+    def __init__(self, bid=3848.0, ask=3848.5, vides=1):
+        self.bid, self.ask = bid, ask
+        self.restants = vides
+        self.appels = 0
+
+    def symbol_select(self, symbol, visible):
+        return True
+
+    def symbols_get(self):
+        # `_quote` date son tick, ce qui passe par la mesure d'horloge. Sans
+        # candidat, elle rend None et l'horodatage reste en heure serveur —
+        # ce que ce test ne juge pas.
+        return []
+
+    def symbol_info_tick(self, symbol):
+        self.appels += 1
+        if self.restants > 0:
+            self.restants -= 1
+            return SimpleNamespace(bid=0.0, ask=0.0, last=0.0, time=0)
+        return SimpleNamespace(bid=self.bid, ask=self.ask, last=0.0,
+                               time=int(time.time()) + 7200)
+
+    def symbol_info(self, symbol):
+        return SimpleNamespace(point=0.01)
+
+    def last_error(self):
+        return (0, "")
+
+
+def test_un_symbole_juste_abonne_est_reinterroge():
+    # Le 16/11 sur goat-paylater : `symbol_select` reussit, mais le premier
+    # tick arrive vide et le plan etait refuse pour « marche ferme ».
+    mt5 = FauxTicks(vides=1)
+    cote = worker._quote(etat(mt5), "XAUUSD.x")
+    assert cote["quoting"] is True
+    assert cote["bid"] == 3848.0
+    assert mt5.appels == 2
+
+
+def test_un_marche_vraiment_ferme_reste_signale_comme_tel():
+    # La seconde chance ne doit pas transformer une fermeture en cotation :
+    # deux tentatives vides restent deux tentatives vides.
+    mt5 = FauxTicks(vides=99)
+    cote = worker._quote(etat(mt5), "XAUUSD.x")
+    assert cote["quoting"] is False
+    assert cote["bid"] == 0.0
 
 
 if __name__ == "__main__":

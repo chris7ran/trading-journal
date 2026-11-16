@@ -237,6 +237,11 @@ def _server_offset(state: _State) -> int | None:
 #: tests, qui n'ont pas de terminal à attendre.
 PAUSE_HISTORIQUE_SECONDS = 1.5
 
+#: Même idée pour le premier tick d'un symbole qu'on vient d'ajouter au Market
+#: Watch. Plus court : il s'agit d'un aller-retour serveur, pas d'un
+#: téléchargement d'historique.
+PAUSE_COTATION_SECONDS = 0.8
+
 
 def _mesurer_offset(state: _State) -> tuple[int | None, list[dict]]:
     """Interroger les symboles, et rendre le décalage **avec** son échantillon.
@@ -557,6 +562,18 @@ def _quote(state: _State, symbol: str) -> dict:
     if not mt5.symbol_select(symbol, True):
         raise _unknown_symbol(symbol)
     tick = mt5.symbol_info_tick(symbol)
+
+    # Un symbole qu'on vient d'ajouter au Market Watch n'a pas encore reçu de
+    # tick : `symbol_select` déclare l'abonnement, le serveur l'honore une
+    # fraction de seconde plus tard. Sans cette seconde chance, le tout premier
+    # chiffrage sur un compte fraîchement câblé est refusé pour « marché
+    # fermé » alors que le marché est ouvert — c'est arrivé le 16/11 sur
+    # goat-paylater, et le message envoyait chercher au mauvais endroit.
+    if tick is None or not (tick.bid and tick.ask):
+        if PAUSE_COTATION_SECONDS:
+            time.sleep(PAUSE_COTATION_SECONDS)
+        tick = mt5.symbol_info_tick(symbol)
+
     if tick is None:
         raise WorkerError(f"aucune cotation pour {symbol} : {mt5.last_error()}")
 
